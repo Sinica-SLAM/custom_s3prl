@@ -22,6 +22,7 @@ from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
 from s3prl.upstream.interfaces import Featurizer
+from s3prl.upstream.tf_featurizer import TFFeaturizer
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
 from huggingface_hub import HfApi, HfFolder, Repository
@@ -164,13 +165,21 @@ class Runner():
 
 
     def _get_featurizer(self):
-        model = Featurizer(
-            upstream = self.upstream.model,
-            feature_selection = self.args.upstream_feature_selection,
-            layer_selection = self.args.upstream_layer_selection,
-            upstream_device = self.args.device,
-            normalize = self.args.upstream_feature_normalize,
-        ).to(self.args.device)
+        if self.args.upstream_feature_selection == 'tf_select':
+            model = TFFeaturizer(
+                upstream = self.upstream.model,
+                upstream_device = self.args.device,
+                layer_selection=self.args.upstream_layer_selection,
+                normalize = self.args.upstream_feature_normalize,
+            ).to(self.args.device)
+        else:
+            model = Featurizer(
+                upstream = self.upstream.model,
+                feature_selection = self.args.upstream_feature_selection,
+                layer_selection = self.args.upstream_layer_selection,
+                upstream_device = self.args.device,
+                normalize = self.args.upstream_feature_normalize,
+            ).to(self.args.device)
 
         return self._init_model(
             model = model,
@@ -512,7 +521,7 @@ class Runner():
             organization = os.environ.get("HF_USERNAME")
         huggingface_token = HfFolder.get_token()
         print(f"[Runner] - Organisation to push fine-tuned model to: {organization}")
-        
+
         # Extract upstream repository metadata
         if self.args.hub == "huggingface":
             model_info = HfApi().model_info(self.args.upstream, token=huggingface_token)

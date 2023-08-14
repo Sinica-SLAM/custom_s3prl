@@ -98,15 +98,9 @@ class Runner():
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
         # cache the upstream features to h5 file
-        cache_dir = Path(self.config['runner']['cache_dir'])
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_path = cache_dir / f"{self.args.upstream}.h5"
-        self.cache_worker = self.config['runner'].get('cache_workers') or os.cpu_count()
-        try:
-            self.cache = h5.File(self.cache_path, 'a')
-        except OSError:
-            os.remove(self.cache_path)
-            self.cache = h5.File(self.cache_path, 'a')
+        self.cache_dir = Path(self.config['runner']['cache_dir'])
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_files = set()
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -236,14 +230,15 @@ class Runner():
             f.write(model_card)
 
     def have_cache(self, filepath: str) -> bool:
-        return filepath in self.cache
+        return filepath in self.cache_files
 
     def save_cache(self, filepath: str, feature : torch.Tensor):
         np_feature = feature.numpy(force=True)
-        self.cache.create_dataset(filepath, data=np_feature, compression="lzf")
+        feature_path = self.cache_dir / f"{filepath}.npy"
+        np.save(feature_path, np_feature)
 
     def load_cache(self, filepath: str) -> torch.Tensor:
-        feature =  self.cache[filepath][:]
+        feature =  np.load(self.cache_dir / f"{filepath}.npy")
         return torch.from_numpy(feature)
 
     def load_cache_mp(self, filepaths: List[str]):

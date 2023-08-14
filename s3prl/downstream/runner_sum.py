@@ -23,7 +23,7 @@ from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
 from s3prl.upstream.interfaces import Featurizer
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
-
+from s3prl.nn.two_model_sum import two_model_sum
 from huggingface_hub import HfApi, HfFolder, Repository
 
 SAMPLE_RATE = 16000
@@ -91,11 +91,14 @@ class Runner():
         self.config = config
         self.init_ckpt = torch.load(
             self.args.init_ckpt, map_location='cpu') if self.args.init_ckpt else {}
-
-        self.upstream = self._get_upstream()
-        self.featurizer = self._get_featurizer()
+        self.modelname = ['wavlm', 'hubert']  # 1: wavlm 2: hubert
+        print(self.modelname)
+        self.upstream1, self.upstream2 = self._get_upstream()
+        self.featurizer1, self.featurizer2 = self._get_featurizer()
+        self.two_model_sum = self._get_two_model_sum()
         self.downstream = self._get_downstream()
-        self.all_entries = [self.upstream, self.featurizer, self.downstream]
+        self.all_entries = [self.upstream1, self.upstream2,
+                            self.featurizer1, self.featurizer2, self.two_model_sum, self.downstream]
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -112,7 +115,7 @@ class Runner():
 
         if is_initialized() and trainable and any((p.requires_grad for p in model.parameters())):
             model = DDP(model, device_ids=[
-                        self.args.local_rank], find_unused_parameters=False)
+                        self.args.local_rank], find_unused_parameters=True)
             for interface in interfaces or []:
                 setattr(model, interface, getattr(model.module, interface))
 
@@ -141,44 +144,82 @@ class Runner():
             Upstream = UpstreamExpert
             ckpt_path = os.path.join(filepath, self.args.upstream_model_name)
         else:
-            Upstream = getattr(hub, self.args.upstream)
-            ckpt_path = self.args.upstream_ckpt
+            Upstream = []
+            """
+            Wavlm and HuBERT
+            """
+            for modelname in self.modelname:
+                _upstream = getattr(hub, modelname)
+                Upstream.append(_upstream)
+                ckpt_path = self.args.upstream_ckpt
         upstream_refresh = self.args.upstream_refresh
 
         if is_initialized() and get_rank() > 0:
             torch.distributed.barrier()
             upstream_refresh = False
-
-        model = Upstream(
-            ckpt=ckpt_path,
-            model_config=self.args.upstream_model_config,
-            refresh=upstream_refresh,
-        ).to(self.args.device)
-
+        model = []
+        for eachstream in Upstream:
+            eachmodel = eachstream(
+                ckpt=ckpt_path,
+                model_config=self.args.upstream_model_config,
+                refresh=upstream_refresh,
+            ).to(self.args.device)
+            model.append(eachmodel)
+        print(len(model))
         if is_initialized() and get_rank() == 0:
             torch.distributed.barrier()
+        result = []
+        idx = 0
+        for eachmodel in model:
+            idx += 1
+            eachresult = self._init_model(
+                model=eachmodel,
+                name='Upstream'+str(idx),
+                trainable=self.args.upstream_trainable,
+                interfaces=["get_downsample_rates"]
+            )
+            result.append(eachresult)
 
-        return self._init_model(
-            model=model,
-            name='Upstream',
-            trainable=self.args.upstream_trainable,
-            interfaces=["get_downsample_rates"]
-        )
+        return tuple(result)
 
     def _get_featurizer(self):
-        model = Featurizer(
-            upstream=self.upstream.model,
+        model1 = Featurizer(
+            upstream=self.upstream1.model,
             feature_selection=self.args.upstream_feature_selection,
-            layer_selection=self.args.upstream_layer_selection,
+            layer_selection=self.args.upstream1_layer_selection,
             upstream_device=self.args.device,
             normalize=self.args.upstream_feature_normalize,
         ).to(self.args.device)
 
-        return self._init_model(
-            model=model,
-            name='Featurizer',
+        model2 = Featurizer(
+            upstream=self.upstream2.model,
+            feature_selection=self.args.upstream_feature_selection,
+            layer_selection=self.args.upstream2_layer_selection,
+            upstream_device=self.args.device,
+            normalize=self.args.upstream_feature_normalize,
+        ).to(self.args.device)
+
+        return (self._init_model(
+            model=model1,
+            name='Featurizer1',
             trainable=True,
             interfaces=['output_dim', 'downsample_rate']
+        ), self._init_model(
+            model=model2,
+            name='Featurizer2',
+            trainable=True,
+            interfaces=['output_dim', 'downsample_rate']
+        )
+        )
+
+    def _get_two_model_sum(self):
+        model = two_model_sum().to(self.args.device)
+        print(type(model))
+        return self._init_model(
+            model=model,
+            name='two_model_sum',
+            trainable=True,
+            interfaces=[]
         )
 
     def _get_downstream(self):
@@ -187,8 +228,8 @@ class Runner():
         Downstream = getattr(expert, "DownstreamExpert")
 
         model = Downstream(
-            upstream_dim=self.featurizer.model.output_dim,
-            upstream_rate=self.featurizer.model.downsample_rate,
+            upstream_dim=self.featurizer1.model.output_dim,
+            upstream_rate=self.featurizer1.model.downsample_rate,
             **self.config,
             **vars(self.args)
         ).to(self.args.device)
@@ -230,12 +271,12 @@ class Runner():
         trainable_paras = []
         for entry in self.all_entries:
             if entry.trainable:
-                entry.model.train().to(self.args.device)
+                entry.model.train()
                 trainable_models.append(entry.model)
                 trainable_paras += list(entry.model.parameters())
             else:
-                entry.model.eval().to(self.args.device)
-
+                entry.model.eval()
+        print(trainable_models)
         # optimizer
         optimizer = self._get_optimizer(trainable_models)
 
@@ -289,12 +330,19 @@ class Runner():
 
                     wavs = [torch.FloatTensor(wav).to(
                         self.args.device) for wav in wavs]
-                    if self.upstream.trainable:
-                        features = self.upstream.model(wavs)
+                    if self.upstream1.trainable:
+                        features1 = self.upstream1.model(wavs)
+                        features2 = self.upstream2.model(wavs)
                     else:
                         with torch.no_grad():
-                            features = self.upstream.model(wavs)
-                    features = self.featurizer.model(wavs, features)
+                            features1 = self.upstream1.model(wavs)
+                            features2 = self.upstream2.model(wavs)
+                    features1 = self.featurizer1.model([], features1)
+                    features2 = self.featurizer2.model([], features2)
+                    features = self.two_model_sum.model(features1, features2)
+                    features = self.featurizer1.model.tolist(wavs, features)
+                    # print(type(features))
+                    # print(features[0].shape)
 
                     if specaug:
                         features, _ = specaug(features)
@@ -441,7 +489,7 @@ class Runner():
         trainings = []
         for entry in self.all_entries:
             trainings.append(entry.model.training)
-            entry.model.eval().to(self.args.device)
+            entry.model.eval()
 
         # prepare data
         dataloader = self.downstream.model.get_dataloader(split)
@@ -457,8 +505,13 @@ class Runner():
             wavs = [torch.FloatTensor(wav).to(self.args.device)
                     for wav in wavs]
             with torch.no_grad():
-                features = self.upstream.model(wavs)
-                features = self.featurizer.model(wavs, features)
+                features1 = self.upstream1.model(wavs)
+                features2 = self.upstream2.model(wavs)
+                features1 = self.featurizer1.model([], features1)
+                features2 = self.featurizer2.model([], features2)
+                # exit()
+                features = self.two_model_sum.model(features1, features2)
+                features = self.featurizer1.model.tolist(wavs, features)
                 self.downstream.model(
                     split,
                     features, *others,
@@ -485,7 +538,7 @@ class Runner():
 
         for entry, training in zip(self.all_entries, trainings):
             if training:
-                entry.model.train().to(self.args.device)
+                entry.model.train()
 
         if not_during_training:
             logger.close()
@@ -506,11 +559,11 @@ class Runner():
         wavs = [wav.view(-1).to(self.args.device)]
 
         for entry in self.all_entries:
-            entry.model.eval().to(self.args.device)
+            entry.model.eval()
 
         with torch.no_grad():
-            features = self.upstream.model(wavs)
-            features = self.featurizer.model(wavs, features)
+            features = self.upstream1.model(wavs)
+            features = self.featurizer1.model(wavs, features)
             self.downstream.model.inference(features, [filename])
 
     def push_to_huggingface_hub(self):

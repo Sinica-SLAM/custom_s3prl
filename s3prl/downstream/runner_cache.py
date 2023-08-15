@@ -103,7 +103,7 @@ class Runner():
             "cache" / \
             f"{self.args.upstream}" / \
             f"{self.args.upstream_layer_selection}" / \
-            f"{self.args.downstream}.h5"
+            self.config['downstream_expert']['datarc']['train'][0] / \
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.cache_worker = self.config['runner'].get('cache_workers') or os.cpu_count()
         self.cache = h5.File(self.cache_path, "a")

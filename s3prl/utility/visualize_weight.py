@@ -45,12 +45,12 @@ x = range(1, len(norm_weights)+1)
 plt.bar(x, norm_weights, align='center')
 
 # set xticks and ylim
-plt.xticks(x, [str(i) for i in x])
+plt.xticks(x, [str(i-1) for i in x])
 plt.ylim(0, 1)
 
 # set names
 plt.title(f'Distribution of normalized weight - {args.name}')
 plt.xlabel('Layer ID (First -> Last)')
-plt.ylabel('Percentage (%)')
+plt.ylabel('Weight')
 
 plt.savefig(os.path.join(args.out_dir, 'visualize_weight.png'), bbox_inches='tight')

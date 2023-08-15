@@ -90,7 +90,7 @@ class Runner():
         self.config = config
         self.init_ckpt = torch.load(
             self.args.init_ckpt, map_location='cpu') if self.args.init_ckpt else {}
-        self.modelname = ['wavlm', 'hubert']  # 1: wavlm 2: hubert
+        self.modelname = ['wavlm_large', 'data2vec_large_ll60k']  # 1: wavlm 2: hubert
         print(self.modelname)
         self.upstream1, self.upstream2 = self._get_upstream()
         self.featurizer1, self.featurizer2 = self._get_featurizer()
@@ -144,7 +144,7 @@ class Runner():
         else:
             Upstream = []
             """
-            Wavlm and HuBERT
+            Wavlm_L and data2vec_L
             """
             for modelname in self.modelname:
                 _upstream = getattr(hub, modelname)
@@ -552,8 +552,14 @@ class Runner():
             entry.model.eval()
 
         with torch.no_grad():
-            features = self.upstream1.model(wavs)
-            features = self.featurizer1.model(wavs, features)
+            features1 = self.upstream1.model(wavs)
+            features2 = self.upstream2.model(wavs)
+            features1 = self.featurizer1.model(wavs, features1)
+            features2 = self.featurizer2.model(wavs, features2)
+            # exit()
+            features = torch.cat((features1, features2), 2)
+            features = self.featurizer1.model.tolist(wavs, features)
+
             self.downstream.model.inference(features, [filename])
 
     def push_to_huggingface_hub(self):

@@ -1,11 +1,11 @@
 runner:
   total_steps: 200000
   gradient_clipping: 1
-  gradient_accumulate_steps: 1
+  gradient_accumulate_steps: 4
   log_step: 100
   eval_step: 2000
   save_step: 500
-  max_keep: 1
+  max_keep: 10
   eval_dataloaders:
     - dev-clean
 
@@ -38,17 +38,17 @@ specaug:
 
 downstream_expert:
   datarc:
-    train: ['train-clean-100']
+    train: ['10h']
     dev-clean: ['dev-clean']
     dev-other: ['dev-other']
     test-clean: ['test-clean']
     test-other: ['test-other']
     num_workers: 12
-    train_batch_size: 32
-    batch_size: 32
+    train_batch_size: 8
+    batch_size: 8
     eval_batch_size: 1
-    libri_root: '/app/data/LibriSpeech'
-    bucket_file: './data/librispeech/len_for_bucket'
+    libri_root: '/mnt/md0/user_wadeowatts17/LibriSpeech'
+    bucket_file: '/mnt/md0/user_wadeowatts17/custom_s3prl/s3prl/data/Libri'
     dict_path: "./downstream/asr/char.dict"
 
     zero_infinity: True

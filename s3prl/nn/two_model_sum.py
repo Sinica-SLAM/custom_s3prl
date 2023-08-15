@@ -12,7 +12,7 @@ class two_model_sum(torch.nn.Module):
         super().__init__()
         self.l = torch.nn.Parameter(torch.zeros(()))
 
-    def forward(self, wavlm_feature, hubert_feature):
+    def forward(self, feature_1, feature_2):
         """
         In the forward function we accept a Tensor of input data and we must return
         a Tensor of output data. We can use Modules defined in the constructor as
@@ -22,5 +22,5 @@ class two_model_sum(torch.nn.Module):
         # print(torch.sigmoid(self.l))
         # exit()
         l = torch.sigmoid(self.l)
-        result = l*wavlm_feature + (1-l)*hubert_feature
+        result = l * feature_1 + (1-l) * feature_2
         return result

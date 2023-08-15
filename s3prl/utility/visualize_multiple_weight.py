@@ -57,7 +57,7 @@ plt.title(f'Distribution of normalized weight - {args.name}')
 plt.xlabel('Layer ID (First -> Last)')
 plt.ylabel('Weight')
 # set legend
-colors = {'wavlm': 'deepskyblue', 'hubert': 'orange'}
+colors = {'wavlm Large': 'deepskyblue', 'data2vec Large': 'orange'}
 labels = list(colors.keys())
 handles = [plt.Rectangle((0, 0), 1, 1, color=colors[label])
            for label in labels]

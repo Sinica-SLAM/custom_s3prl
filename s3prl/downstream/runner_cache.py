@@ -506,7 +506,7 @@ class Runner():
             if batch_id > evaluate_steps:
                 break
 
-            features, labels, paths = self.get_feature(datas)
+            features, labels, paths = self.get_feature(self.upstream, self.featurizer, datas)
 
             with torch.no_grad():
                 self.downstream.model(

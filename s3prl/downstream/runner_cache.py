@@ -98,9 +98,21 @@ class Runner():
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
         # cache the upstream features to h5 file
-        self.cache_dir = Path(self.config['runner']['cache_dir'])
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_files = set()
+        self.cache_path = Path(
+            self.config['downstream_expert']['datarc']['libri_root']) / \
+            "cache" / \
+            f"{self.args.upstream}" / \
+            self.config['downstream_expert']['datarc']['train'][0] / \
+            f"{self.args.upstream_layer_selection}.h5"
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self.cache_worker = self.config['runner'].get('cache_workers') or os.cpu_count()
+        self.cache = h5.File(self.cache_path, "a")
+        self.pool = mp.Pool(self.cache_worker)
+
+    def __del__(self):
+        self.pool.close()
+        self.pool.join()
+        self.cache.close()
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -242,43 +254,41 @@ class Runner():
         return torch.from_numpy(feature)
 
     def load_cache_mp(self, filepaths: List[str]):
-        with mp.Pool(processes=self.cache_worker) as pool:
-            features = pool.map(self.load_cache, filepaths)
-        return features
+        return self.pool.map_async(self.load_cache, filepaths)
 
-    def get_feature(self, datas):
+    def get_feature(self, upstream, featurizer, datas):
         # use cache if possible
         uncached_data = []
         cached_data = []
         for data in zip(*datas):
             (uncached_data, cached_data)[self.have_cache(data[2])].append(data)
 
+        cached_wavs, cached_labels, cached_paths, cached_features = [], [], [], []
+        if cached_data:
+            cached_wavs, cached_labels, cached_paths = zip(*cached_data)
+            cached_features = self.load_cache_mp(cached_paths)
+
         uncached_wavs, uncached_labels, uncached_paths, uncached_features = [], [], [], []
-        if len(uncached_data) > 0:
+        if uncached_data:
             uncached_wavs, uncached_labels, uncached_paths = zip(*uncached_data)
 
             uncached_wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in uncached_wavs]
 
             with torch.no_grad():
-                uncached_features = self.upstream.model(uncached_wavs)
-                uncached_features = self.featurizer.model(uncached_wavs, uncached_features)
+                uncached_features = upstream.model(uncached_wavs)
+                uncached_features = featurizer.model(uncached_wavs, uncached_features)
 
             for path, feature in zip(uncached_paths, uncached_features):
                 self.save_cache(path, feature)
 
-        cached_wavs, cached_labels, cached_paths, cached_features = [], [], [], []
-        if len(cached_data) > 0:
-            cached_wavs, cached_labels, cached_paths = zip(*cached_data)
-            cached_features = self.load_cache_mp(cached_paths)
+        if cached_data:
+            cached_features = cached_features.get()
 
         labels   = list(cached_labels)   + list(uncached_labels)
         paths    = list(cached_paths)    + list(uncached_paths)
         features = list(cached_features) + list(uncached_features)
 
         features = [feature.to(self.args.device) for feature in features]
-
-        del uncached_wavs, uncached_labels, uncached_paths, uncached_features
-        del cached_wavs, cached_labels, cached_paths, cached_features
 
         return features, labels, paths
 
@@ -342,7 +352,7 @@ class Runner():
                         break
                     global_step = pbar.n + 1
 
-                    features, labels, paths = self.get_feature(datas)
+                    features, labels, paths = self.get_feature(self.upstream, self.featurizer, datas)
 
                     if specaug:
                         features, _ = specaug(features)
@@ -461,7 +471,6 @@ class Runner():
         if is_leader_process():
             logger.close()
 
-
     def evaluate(self, split=None, logger=None, global_step=0):
         """evaluate function will always be called on a single process even during distributed training"""
 
@@ -498,7 +507,7 @@ class Runner():
             if batch_id > evaluate_steps:
                 break
 
-            features, labels, paths = self.get_feature(datas)
+            features, labels, paths = self.get_feature(self.upstream, self.featurizer, datas)
 
             with torch.no_grad():
                 self.downstream.model(

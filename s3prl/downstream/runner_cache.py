@@ -110,9 +110,11 @@ class Runner():
         self.pool = mp.Pool(self.cache_worker)
 
     def __del__(self):
-        self.pool.close()
-        self.pool.join()
-        self.cache.close()
+        if hasattr(self, "pool") and self.pool:
+            self.pool.close()
+            self.pool.join()
+        if hasattr(self, "cache") and self.cache:
+            self.cache.close()
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)

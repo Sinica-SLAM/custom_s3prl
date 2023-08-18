@@ -35,11 +35,11 @@ HALF_BATCHSIZE_TIME = 2000
 ####################
 class SequenceDataset(Dataset):
 
-    def __init__(self, split, bucket_size, dictionary, libri_root, bucket_file, **kwargs):
+    def __init__(self, split, bucket_size, dictionary, kaldi_root, bucket_file, **kwargs):
         super(SequenceDataset, self).__init__()
 
         self.dictionary = dictionary
-        self.libri_root = libri_root
+        self.kaldi_root = kaldi_root
         self.sample_rate = SAMPLE_RATE
         self.split_sets = kwargs[split]
 
@@ -57,7 +57,7 @@ class SequenceDataset(Dataset):
             else:
                 logging.warning(f'{item} is not found in bucket_file: {bucket_file}, skipping it.')
 
-        table_list = pd.concat(table_list)
+        table_list = pd.concat(table_list).set_index('id')
         table_list = table_list.sort_values(by=['length'], ascending=False)
 
         X = table_list['file_path'].tolist()
@@ -66,7 +66,7 @@ class SequenceDataset(Dataset):
         assert len(X) != 0, f"0 data found for {split}"
 
         # Transcripts
-        Y = self._load_transcript(X)
+        Y = self._load_transcript(table_list)
 
         x_names = set([self._parse_x_name(x) for x in X])
         y_names = set(Y.keys())
@@ -109,36 +109,34 @@ class SequenceDataset(Dataset):
         return x.split('/')[-1].split('.')[0]
 
     def _load_wav(self, wav_path):
-        wav, sr = torchaudio.load(os.path.join(self.libri_root, wav_path))
+        wav, sr = torchaudio.load(os.path.join(self.kaldi_root, wav_path))
         assert sr == self.sample_rate, f'Sample rate mismatch: real {sr}, config {self.sample_rate}'
         return wav.view(-1)
 
-    def _load_transcript(self, x_list):
+    def _load_transcript(self, table):
         """Load the transcripts for Librispeech"""
         def process_trans(transcript):
             #TODO: support character / bpe
             transcript = transcript.upper()
             return " ".join(list(transcript.replace(" ", "|"))) + " |"
 
-        trsp_sequences = {}
-        split_spkr_chap_list = list(
-            set(
-                "/".join(x.split('/')[:-1]) for x in x_list
-            )
-        )
+        id_trsp_df = pd.DataFrame(columns=['id', 'transcript'])
+        for meta_dir in table['meta_dir'].unique():
+            with open(os.path.join(self.kaldi_root, meta_dir, "text")) as text_f:
+                for line in text_f.readlines():
+                    id, *transcript = line.strip().split()
+                    transcript = ' '.join(transcript)
+                    transcript = process_trans(transcript)
 
-        for dir in split_spkr_chap_list:
-            parts = dir.split('/')
-            trans_path = f"{parts[-2]}-{parts[-1]}.trans.txt"
-            path = os.path.join(self.libri_root, dir, trans_path)
-            assert os.path.exists(path)
+                    id_trsp_df.append({'id': id, 'transcript': transcript}, ignore_index=True)
 
-            with open(path, "r") as trans_f:
-                for line in trans_f:
-                    lst = line.strip().split()
-                    trsp_sequences[lst[0]] = process_trans(" ".join(lst[1:]))
+        id_path_trsp_df = pd.merge(table, id_trsp_df, on='id')
 
-        return trsp_sequences
+        file_names = [self._parse_x_name(x) for x in id_path_trsp_df['file_path']]
+        assert len(file_names) == len(set(file_names)), 'Duplicate file names found.'
+        transcripts = id_path_trsp_df['transcript'].tolist()
+
+        return dict(zip(file_names, transcripts))
 
     def _build_dictionary(self, transcripts, workers=1, threshold=-1, nwords=-1, padding_factor=8):
         d = Dictionary()

@@ -249,7 +249,7 @@ class Runner():
         self.cache.create_dataset(filepath, data=np_feature, compression="lzf")
 
     def load_cache(self, filepath: str) -> torch.Tensor:
-        feature =  self.cache[filepath][:]
+        feature = self.cache[filepath][:]
         return torch.from_numpy(feature)
 
     def load_cache_mp(self, filepaths: List[str]):
@@ -632,3 +632,4 @@ class Runner():
         print("[Runner] - Pushing model files to the Hub ...")
         model_repo.push_to_hub()
         print("[Runner] - Training run complete!")
+        

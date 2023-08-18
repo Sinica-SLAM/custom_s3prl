@@ -21,7 +21,7 @@ from torch.distributed import is_initialized, get_rank, get_world_size
 from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
-from s3prl.upstream.interfaces import Featurizer
+from s3prl.upstream.featurizer import Featurizer
 from s3prl.upstream.fusioner import *
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
@@ -49,6 +49,10 @@ class Runner():
         self.init_ckpt = torch.load(self.args.init_ckpt, map_location='cpu') if self.args.init_ckpt else {}
 
         self.self_fusion = self.args.upstream1 == self.args.upstream2 or self.args.upstream2 is None
+        if self.self_fusion:
+            print(f'[Runner] - Use self fusion , upstream: {self.args.upstream1}')
+        else:
+            print(f'[Runner] - Use cross fusion , upstream1: {self.args.upstream1}, upstream2: {self.args.upstream2}')
         self.upstream1, self.upstream2 = self._get_upstream()
         self.ifeaturizer1, self.ifeaturizer2 = self._get_featurizer()
         self.fusioner = self._get_fusioner()
@@ -147,12 +151,12 @@ class Runner():
             model = ifeaturizer1,
             name = 'iFeaturizer1',
             trainable = True,
-            interfaces = ['output_dim', 'downsample_rate']
+            interfaces = ['output_dim', 'downsample_rate', 'get_feature_lens']
         ), self._init_model(
             model = ifeaturizer2,
             name = 'iFeaturizer2',
             trainable = True,
-            interfaces = ['output_dim', 'downsample_rate']
+            interfaces = ['output_dim', 'downsample_rate', 'get_feature_lens']
         )
 
     def _get_fusioner(self):
@@ -162,8 +166,8 @@ class Runner():
 
         Fusioner = eval(self.args.fusioner)
         fusioner = Fusioner(
-            upstream_dim = self.ifeaturizer1.model.output_dim,
-            downsample_rate = self.ifeaturizer1.model.downsample_rate,
+            self.ifeaturizer1.model,
+            self.ifeaturizer2.model,
             **self.config,
             **vars(self.args)
         ).to(self.args.device)
@@ -284,10 +288,12 @@ class Runner():
                             features1 = self.upstream1.model(wavs)
                             features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
 
-                    features1 = self.ifeaturizer1.model(wavs, features1)
-                    features2 = self.ifeaturizer2.model(wavs, features2)
+                    features1 = self.ifeaturizer1.model(features1)
+                    features2 = self.ifeaturizer2.model(features2)
 
-                    features = self.fusioner.model(features1, features2)
+                    feature_lens = self.ifeaturizer1.model.get_feature_lens(wavs) 
+
+                    features = self.fusioner.model(features1, features2, feature_lens)
 
                     if specaug:
                         features, _ = specaug(features)
@@ -445,9 +451,10 @@ class Runner():
             with torch.no_grad():
                 features1 = self.upstream1.model(wavs)
                 features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
-                features1 = self.ifeaturizer1.model(wavs, features1)
-                features2 = self.ifeaturizer2.model(wavs, features2)
-                features = self.fusioner.model(features1, features2)
+                features1 = self.ifeaturizer1.model(features1)
+                features2 = self.ifeaturizer2.model(features2)
+                feature_lens = self.ifeaturizer1.model.get_feature_lens(wavs) 
+                features = self.fusioner.model(features1, features2, feature_lens)
                 self.downstream.model(
                     split,
                     features, *others,
@@ -500,7 +507,9 @@ class Runner():
         with torch.no_grad():
             features1 = self.upstream1.model(wavs)
             features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
-            features1 = self.ifeaturizer1.model(wavs, features1)
-            features2 = self.ifeaturizer2.model(wavs, features2)
+            features1 = self.ifeaturizer1.model(features1)
+            features2 = self.ifeaturizer2.model(features2)
+            feature_lens = self.ifeaturizer1.model.get_feature_lens(wavs) 
+            features = self.fusioner.model(features1, features2, feature_lens)
             features = self.fusioner.model(features1, features2)
             self.downstream.model.inference(features, [filename])

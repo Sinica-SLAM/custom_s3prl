@@ -110,11 +110,9 @@ class Runner():
         self.pool = mp.Pool(self.cache_worker)
 
     def __del__(self):
-        if hasattr(self, "pool") and self.pool:
-            self.pool.close()
-            self.pool.join()
-        if hasattr(self, "cache") and self.cache:
-            self.cache.close()
+        self.pool.close()
+        self.pool.join()
+        self.cache.close()
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -634,3 +632,4 @@ class Runner():
         print("[Runner] - Pushing model files to the Hub ...")
         model_repo.push_to_hub()
         print("[Runner] - Training run complete!")
+        

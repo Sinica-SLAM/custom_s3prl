@@ -244,15 +244,14 @@ class Runner():
             f.write(model_card)
 
     def have_cache(self, filepath: str) -> bool:
-        return filepath in self.cache_files
+        return filepath in self.cache
 
     def save_cache(self, filepath: str, feature : torch.Tensor):
         np_feature = feature.numpy(force=True)
-        feature_path = self.cache_dir / f"{filepath}.npy"
-        np.save(feature_path, np_feature)
+        self.cache.create_dataset(filepath, data=np_feature, compression="lzf")
 
     def load_cache(self, filepath: str) -> torch.Tensor:
-        feature =  np.load(self.cache_dir / f"{filepath}.npy")
+        feature = self.cache[filepath][:]
         return torch.from_numpy(feature)
 
     def load_cache_mp(self, filepaths: List[str]):

@@ -10,6 +10,7 @@ import importlib
 from pathlib import Path
 import multiprocessing.dummy as mp
 from typing import List
+import time
 
 import torch
 import torchaudio
@@ -105,14 +106,23 @@ class Runner():
             self.config['downstream_expert']['datarc']['train'][0] / \
             f"{self.args.upstream_layer_selection}.h5"
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+
         self.cache_worker = self.config['runner'].get('cache_workers') or os.cpu_count()
+        self.cache_ratio = self.args.cache_ratio
+        print(f"[Runner] - Using {self.cache_worker} workers to cache upstream features")
+        print(f"[Runner] - Initial {self.cache_ratio} of upstream features to cache")
+
         self.cache = h5.File(self.cache_path, "a")
         self.pool = mp.Pool(self.cache_worker)
 
+        self.unsave_cache = None
+
     def __del__(self):
-        self.pool.close()
-        self.pool.join()
-        self.cache.close()
+        if hasattr(self, "pool") and self.pool:
+            self.pool.close()
+            self.pool.join()
+        if hasattr(self, "cache") and self.cache:
+            self.cache.close()
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -245,15 +255,25 @@ class Runner():
         return filepath in self.cache
 
     def save_cache(self, filepath: str, feature : torch.Tensor):
-        np_feature = feature.numpy(force=True)
-        self.cache.create_dataset(filepath, data=np_feature, compression="lzf")
+        if not self.have_cache(filepath):
+            np_feature = feature.numpy(force=True)
+            self.cache.create_dataset(filepath, data=np_feature, compression="lzf")
+
+    def save_cache_mp(self, filepaths: List[str], features: List[torch.Tensor]):
+        return self.pool.starmap_async(self.save_cache, zip(filepaths, features))
 
     def load_cache(self, filepath: str) -> torch.Tensor:
         feature = self.cache[filepath][:]
-        return torch.from_numpy(feature)
+        return torch.from_numpy(feature).to(self.args.device)
 
     def load_cache_mp(self, filepaths: List[str]):
         return self.pool.map_async(self.load_cache, filepaths)
+
+    def update_cache_ratio(self, duration: float):
+        if duration <= 0.01:
+            self.cache_ratio = min(1.0, self.cache_ratio + 0.02)
+        else:
+            self.cache_ratio = max(0.0, self.cache_ratio - 0.01)
 
     def get_feature(self, upstream, featurizer, datas):
         # use cache if possible
@@ -262,9 +282,14 @@ class Runner():
         for data in zip(*datas):
             (uncached_data, cached_data)[self.have_cache(data[2])].append(data)
 
-        cached_wavs, cached_labels, cached_paths, cached_features = [], [], [], []
+        max_cached_num = round(len(datas[0]) * self.cache_ratio)
+        if len(cached_data) > max_cached_num:
+            uncached_data += cached_data[max_cached_num:]
+            cached_data = cached_data[:max_cached_num]
+
+        cached_labels, cached_paths, cached_features = [], [], []
         if cached_data:
-            cached_wavs, cached_labels, cached_paths = zip(*cached_data)
+            _, cached_labels, cached_paths = zip(*cached_data)
             cached_features = self.load_cache_mp(cached_paths)
 
         uncached_wavs, uncached_labels, uncached_paths, uncached_features = [], [], [], []
@@ -277,17 +302,21 @@ class Runner():
                 uncached_features = upstream.model(uncached_wavs)
                 uncached_features = featurizer.model(uncached_wavs, uncached_features)
 
-            for path, feature in zip(uncached_paths, uncached_features):
-                self.save_cache(path, feature)
 
         if cached_data:
+            start = time.time()
             cached_features = cached_features.get()
+            end = time.time()
+            self.update_cache_ratio(end - start)
+        else:
+            self.update_cache_ratio(0)
+
+        if uncached_data:
+            self.unsave_cache = self.save_cache_mp(uncached_paths, uncached_features)
 
         labels   = list(cached_labels)   + list(uncached_labels)
         paths    = list(cached_paths)    + list(uncached_paths)
         features = list(cached_features) + list(uncached_features)
-
-        features = [feature.to(self.args.device) for feature in features]
 
         return features, labels, paths
 
@@ -399,6 +428,11 @@ class Runner():
                 if scheduler:
                     scheduler.step()
 
+                # save unsave cache
+                if self.unsave_cache:
+                    self.unsave_cache.get()
+                    self.unsave_cache = None
+
                 if not is_leader_process():
                     batch_ids = []
                     records = defaultdict(list)
@@ -406,6 +440,7 @@ class Runner():
 
                 # logging
                 if global_step % self.config['runner']['log_step'] == 0:
+                    print(f"\ncache ratio: {self.cache_ratio:.2f}")
                     self.downstream.model.log_records(
                         train_split,
                         records = records,
@@ -517,6 +552,11 @@ class Runner():
                 )
                 batch_ids.append(batch_id)
 
+            if self.unsave_cache:
+                self.unsave_cache.get()
+                self.unsave_cache = None
+
+        print(f"\ncache ratio: {self.cache_ratio:.2f}")
         save_names = self.downstream.model.log_records(
             split,
             records = records,

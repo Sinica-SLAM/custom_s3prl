@@ -76,6 +76,7 @@ def get_downstream_args():
     parser.add_argument('-a', '--auto_resume', action='store_true', help='Auto-resume if the expdir contains checkpoints')
     parser.add_argument('--push_to_hf_hub', default=False, help='Push all files in experiment directory to the Hugging Face Hub. To use this feature you must set HF_USERNAME and HF_PASSWORD as environment variables in your shell')
     parser.add_argument('--hf_hub_org', help='The Hugging Face Hub organisation to push fine-tuned models to')
+    parser.add_argument('-C', '--cache_ratio', type=float, default=0.99, help='The ratio of cache size to the dataset size. Default is 0.7')
 
     # options
     parser.add_argument('--seed', default=1337, type=int)
@@ -146,7 +147,7 @@ def get_downstream_args():
     if args.override is not None and args.override.lower() != "none":
         override(args.override, args, config)
         os.makedirs(args.expdir, exist_ok=True)
-    
+
     return args, config, backup_files
 
 
@@ -182,6 +183,7 @@ def main():
     assert args.upstream_feature_selection == "hidden_states" and args.upstream_layer_selection is not None, \
         "Need to specify which layer to use for downstream training. "
     assert args.upstream_trainable is False, "Upstream model should be frozen for downstream training. "
+    assert args.cache_ratio > 0 and args.cache_ratio <= 1, "Cache ratio should be in (0, 1]. "
 
     if args.hub == "huggingface":
         args.from_hf_hub = True
@@ -191,7 +193,7 @@ def main():
         huggingface_token = HfApi().login(username=hf_user, password=hf_password)
         HfFolder.save_token(huggingface_token)
         print(f"Logged into Hugging Face Hub with user: {hf_user}")
-    
+
     # Save command
     if is_leader_process():
         with open(os.path.join(args.expdir, f'args_{get_time_tag()}.yaml'), 'w') as file:

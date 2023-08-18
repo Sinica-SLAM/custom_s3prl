@@ -51,13 +51,13 @@ plt.bar(x, norm_weights1, 0.3, align='edge', color='deepskyblue')
 plt.bar(x, norm_weights2, -0.3, align='edge', color='orange')
 # set xticks and ylim
 plt.xticks(x, [str(i-1) for i in x])
-plt.ylim(0, 1)
+plt.ylim(0, 0.3)
 # set names
 plt.title(f'Distribution of normalized weight - {args.name}')
 plt.xlabel('Layer ID (First -> Last)')
 plt.ylabel('Weight')
 # set legend
-colors = {'wavlm Large': 'deepskyblue', 'data2vec Large': 'orange'}
+colors = {'wavlm': 'deepskyblue', 'hubert': 'orange'}
 labels = list(colors.keys())
 handles = [plt.Rectangle((0, 0), 1, 1, color=colors[label])
            for label in labels]

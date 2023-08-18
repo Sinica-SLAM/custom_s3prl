@@ -11,6 +11,7 @@ from pathlib import Path
 import multiprocessing.dummy as mp
 from typing import List
 import time
+import numpy as np
 
 import torch
 import torchaudio
@@ -28,7 +29,6 @@ from s3prl.upstream.interfaces import Featurizer
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
 from huggingface_hub import HfApi, HfFolder, Repository
-import h5py as h5
 
 SAMPLE_RATE = 16000
 
@@ -99,20 +99,21 @@ class Runner():
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
         # cache the upstream features to h5 file
-        self.cache_path = Path(
+        self.cache_dir = Path(
             self.config['downstream_expert']['datarc']['libri_root']) / \
             "cache" / \
             f"{self.args.upstream}" / \
             self.config['downstream_expert']['datarc']['train'][0] / \
-            f"{self.args.upstream_layer_selection}.h5"
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            f"{self.args.upstream_layer_selection}"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.cache_worker = self.config['runner'].get('cache_workers') or os.cpu_count()
+        self.max_threshold = self.config['runner'].get('max_threshold') or 0.1
+        self.threshold = self.max_threshold
         self.cache_ratio = self.args.cache_ratio
         print(f"[Runner] - Using {self.cache_worker} workers to cache upstream features")
         print(f"[Runner] - Initial {self.cache_ratio} of upstream features to cache")
 
-        self.cache = h5.File(self.cache_path, "a")
         self.pool = mp.Pool(self.cache_worker)
 
         self.unsave_cache = None
@@ -121,8 +122,9 @@ class Runner():
         if hasattr(self, "pool") and self.pool:
             self.pool.close()
             self.pool.join()
-        if hasattr(self, "cache") and self.cache:
-            self.cache.close()
+        if hasattr(self, "unsave_cache") and self.unsave_cache:
+            self.unsave_cache.get()
+            self.unsave_cache = None
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -251,47 +253,66 @@ class Runner():
         with open(os.path.join(path, "README.md"), "w") as f:
             f.write(model_card)
 
+    def _parse_cache_path(self, filepath: str) -> str:
+        *dirs, cache_file = filepath.split("-")
+        return os.path.join(self.cache_dir, *dirs, f"{cache_file}.npy")
+
     def have_cache(self, filepath: str) -> bool:
-        return filepath in self.cache
+        return os.path.isfile(self._parse_cache_path(filepath))
 
     def save_cache(self, filepath: str, feature : torch.Tensor):
         if not self.have_cache(filepath):
             np_feature = feature.numpy(force=True)
-            self.cache.create_dataset(filepath, data=np_feature, compression="lzf")
+            filepath = self._parse_cache_path(filepath)
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            np.save(filepath, np_feature)
+
+    def load_cache(self, filepath: str) -> torch.Tensor:
+        np_feature = np.load(self._parse_cache_path(filepath))
+        return torch.from_numpy(np_feature).to(self.args.device)
 
     def save_cache_mp(self, filepaths: List[str], features: List[torch.Tensor]):
         return self.pool.starmap_async(self.save_cache, zip(filepaths, features))
 
-    def load_cache(self, filepath: str) -> torch.Tensor:
-        feature = self.cache[filepath][:]
-        return torch.from_numpy(feature).to(self.args.device)
-
     def load_cache_mp(self, filepaths: List[str]):
         return self.pool.map_async(self.load_cache, filepaths)
 
-    def update_cache_ratio(self, duration: float):
-        if duration <= 0.01:
-            self.cache_ratio = min(1.0, self.cache_ratio + 0.02)
+    def update_cache_ratio(self, task_start, wait_start, task_end):
+        total_duration = task_end - task_start
+        wait_duration = wait_start - task_start
+        if wait_duration <= self.threshold * total_duration:
+            self.cache_ratio = min(1.0, self.cache_ratio + 0.01)
+            self.threshold = max(0.0, self.threshold - 0.001)
         else:
             self.cache_ratio = max(0.0, self.cache_ratio - 0.01)
+            self.threshold = min(self.max_threshold, self.threshold + 0.001)
 
     def get_feature(self, upstream, featurizer, datas):
-        # use cache if possible
+        # complete the unsave cache task first
+        if self.unsave_cache:
+            self.unsave_cache.get()
+            self.unsave_cache = None
+
+        # use cache data if have cached
         uncached_data = []
         cached_data = []
         for data in zip(*datas):
             (uncached_data, cached_data)[self.have_cache(data[2])].append(data)
 
+        # limit the number of cached data by cache_ratio
         max_cached_num = round(len(datas[0]) * self.cache_ratio)
         if len(cached_data) > max_cached_num:
             uncached_data += cached_data[max_cached_num:]
             cached_data = cached_data[:max_cached_num]
 
+        # create load cache task
         cached_labels, cached_paths, cached_features = [], [], []
         if cached_data:
+            task_start = time.time()
             _, cached_labels, cached_paths = zip(*cached_data)
             cached_features = self.load_cache_mp(cached_paths)
 
+        # process uncached data
         uncached_wavs, uncached_labels, uncached_paths, uncached_features = [], [], [], []
         if uncached_data:
             uncached_wavs, uncached_labels, uncached_paths = zip(*uncached_data)
@@ -302,15 +323,16 @@ class Runner():
                 uncached_features = upstream.model(uncached_wavs)
                 uncached_features = featurizer.model(uncached_wavs, uncached_features)
 
-
+        # wait for load cache task
         if cached_data:
-            start = time.time()
+            wait_start = time.time()
             cached_features = cached_features.get()
-            end = time.time()
-            self.update_cache_ratio(end - start)
+            task_end = time.time()
+            self.update_cache_ratio(task_start, wait_start, task_end)
         else:
-            self.update_cache_ratio(0)
+            self.update_cache_ratio(0, 1, 1)
 
+        # create save cache task
         if uncached_data:
             self.unsave_cache = self.save_cache_mp(uncached_paths, uncached_features)
 
@@ -428,11 +450,6 @@ class Runner():
                 if scheduler:
                     scheduler.step()
 
-                # save unsave cache
-                if self.unsave_cache:
-                    self.unsave_cache.get()
-                    self.unsave_cache = None
-
                 if not is_leader_process():
                     batch_ids = []
                     records = defaultdict(list)
@@ -441,6 +458,7 @@ class Runner():
                 # logging
                 if global_step % self.config['runner']['log_step'] == 0:
                     print(f"\ncache ratio: {self.cache_ratio:.2f}")
+                    print(f"threshold: {self.threshold:.2f}")
                     self.downstream.model.log_records(
                         train_split,
                         records = records,
@@ -551,10 +569,6 @@ class Runner():
                     batch_id = batch_id,
                 )
                 batch_ids.append(batch_id)
-
-            if self.unsave_cache:
-                self.unsave_cache.get()
-                self.unsave_cache = None
 
         print(f"\ncache ratio: {self.cache_ratio:.2f}")
         save_names = self.downstream.model.log_records(

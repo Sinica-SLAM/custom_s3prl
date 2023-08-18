@@ -110,11 +110,9 @@ class Runner():
         self.pool = mp.Pool(self.cache_worker)
 
     def __del__(self):
-        if hasattr(self, "pool") and self.pool:
-            self.pool.close()
-            self.pool.join()
-        if hasattr(self, "cache") and self.cache:
-            self.cache.close()
+        self.pool.close()
+        self.pool.join()
+        self.cache.close()
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -244,15 +242,14 @@ class Runner():
             f.write(model_card)
 
     def have_cache(self, filepath: str) -> bool:
-        return filepath in self.cache_files
+        return filepath in self.cache
 
     def save_cache(self, filepath: str, feature : torch.Tensor):
         np_feature = feature.numpy(force=True)
-        feature_path = self.cache_dir / f"{filepath}.npy"
-        np.save(feature_path, np_feature)
+        self.cache.create_dataset(filepath, data=np_feature, compression="lzf")
 
     def load_cache(self, filepath: str) -> torch.Tensor:
-        feature =  np.load(self.cache_dir / f"{filepath}.npy")
+        feature =  self.cache[filepath][:]
         return torch.from_numpy(feature)
 
     def load_cache_mp(self, filepaths: List[str]):

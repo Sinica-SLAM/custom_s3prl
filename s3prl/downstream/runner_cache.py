@@ -108,15 +108,15 @@ class Runner():
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.cache_worker = self.config['runner'].get('cache_workers') or os.cpu_count()
-        self.max_threshold = self.config['runner'].get('max_threshold') or 0.1
-        self.threshold = self.max_threshold
-        self.cache_ratio = self.args.cache_ratio
+        self.max_threshold = self.config['runner'].get('max_threshold') or 0.5
+        self.min_cache_ratio = self.config['runner'].get('min_cache_ratio') or 0.5
         print(f"[Runner] - Using {self.cache_worker} workers to cache upstream features")
-        print(f"[Runner] - Initial {self.cache_ratio} of upstream features to cache")
+
+        self.threshold = self.max_threshold
+        self.unsave_cache = None
 
         self.pool = mp.Pool(self.cache_worker)
 
-        self.unsave_cache = None
 
     def __del__(self):
         if hasattr(self, "pool") and self.pool:
@@ -267,8 +267,11 @@ class Runner():
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             np.save(filepath, np_feature)
 
+    def load_np_feature(self, filepath: str) -> np.ndarray:
+        return np.load(self._parse_cache_path(filepath))
+
     def load_cache(self, filepath: str) -> torch.Tensor:
-        np_feature = np.load(self._parse_cache_path(filepath))
+        np_feature = self.load_np_feature(filepath)
         return torch.from_numpy(np_feature).to(self.args.device)
 
     def save_cache_mp(self, filepaths: List[str], features: List[torch.Tensor]):
@@ -284,7 +287,7 @@ class Runner():
             self.cache_ratio = min(1.0, self.cache_ratio + 0.01)
             self.threshold = max(0.0, self.threshold - 0.001)
         else:
-            self.cache_ratio = max(0.0, self.cache_ratio - 0.01)
+            self.cache_ratio = max(self.min_cache_ratio, self.cache_ratio - 0.01)
             self.threshold = min(self.max_threshold, self.threshold + 0.001)
 
     def get_feature(self, upstream, featurizer, datas):

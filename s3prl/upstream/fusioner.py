@@ -21,7 +21,7 @@ class BaseFusionModule(nn.Module):
 
     def forward(self, features1: Tensor, features2: Tensor, f_lens: List[int]):
         raise NotImplementedError
-    
+
     def showinfo(self):
         print(f"[Fusioner] - Name: {self.name}")
         print(f"[Fusioner] - Upstream dim: {self.upstream_dim}")
@@ -80,8 +80,8 @@ class cross_attention(BaseFusionModule):
         masks = torch.zeros(features1.shape[:-1], dtype=torch.bool, device=features1.device) # (B, T)
         for mask, f_len in zip(masks, f_lens): # (T)
             mask[f_len:] = True
-        features, _ = self.attention(features1, features2, features2, key_padding_mask=masks, need_weights=False) # (B, T, D)
-        return tolist(f_lens, features + features2) # B * (T, D)
+        features, _ = self.attention(features2, features1, features1, key_padding_mask=masks, need_weights=False) # (B, T, D)
+        return tolist(f_lens, features + features1) # B * (T, D)
 
 
 class cross_in_time(BaseFusionModule):
@@ -97,5 +97,5 @@ class cross_in_time(BaseFusionModule):
         features2 = tolist(f_lens, features2)
         def cross(f1, f2):
             *other, T, D = f1.shape
-            return torch.cat([f1, f2], dim=-1).reshape(*other, 2*T, D) 
+            return torch.cat([f1, f2], dim=-1).reshape(*other, 2*T, D)
         return [cross(f1, f2) for f1, f2 in zip(features1, features2)]

@@ -12,6 +12,8 @@ import multiprocessing.dummy as mp
 from typing import List
 import time
 import numpy as np
+from functools import wraps
+import random
 
 import torch
 import torchaudio
@@ -108,12 +110,13 @@ class Runner():
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.cache_worker = self.config['runner'].get('cache_workers') or os.cpu_count()
-        self.max_threshold = self.config['runner'].get('max_threshold') or 0.5
-        self.min_cache_ratio = self.config['runner'].get('min_cache_ratio') or 0.5
+        self.max_threshold = self.config['runner'].get('max_threshold') or 0.3
+        self.min_cache_ratio = self.config['runner'].get('min_cache_ratio') or 0.0
         print(f"[Runner] - Using {self.cache_worker} workers to cache upstream features")
 
-        self.threshold = self.max_threshold
-        self.unsave_cache = None
+        self.threshold = 0.1
+        self.cache_ratio = 1.0
+        self.saving_features = None
 
         self.pool = mp.Pool(self.cache_worker)
 
@@ -122,9 +125,9 @@ class Runner():
         if hasattr(self, "pool") and self.pool:
             self.pool.close()
             self.pool.join()
-        if hasattr(self, "unsave_cache") and self.unsave_cache:
-            self.unsave_cache.get()
-            self.unsave_cache = None
+        if hasattr(self, "unsave_cache") and self.saving_features:
+            self.saving_features.get()
+            self.saving_features = None
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -267,6 +270,9 @@ class Runner():
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             np.save(filepath, np_feature)
 
+    def async_save_caches(self, filepaths: List[str], features: List[torch.Tensor]):
+        return self.pool.starmap_async(self.save_cache, zip(filepaths, features))
+
     def load_np_feature(self, filepath: str) -> np.ndarray:
         return np.load(self._parse_cache_path(filepath))
 
@@ -274,15 +280,12 @@ class Runner():
         np_feature = self.load_np_feature(filepath)
         return torch.from_numpy(np_feature).to(self.args.device)
 
-    def save_cache_mp(self, filepaths: List[str], features: List[torch.Tensor]):
-        return self.pool.starmap_async(self.save_cache, zip(filepaths, features))
-
-    def load_cache_mp(self, filepaths: List[str]):
+    def async_load_caches(self, filepaths: List[str]):
         return self.pool.map_async(self.load_cache, filepaths)
 
     def update_cache_ratio(self, task_start, wait_start, task_end):
         total_duration = task_end - task_start
-        wait_duration = wait_start - task_start
+        wait_duration = task_end - wait_start
         if wait_duration <= self.threshold * total_duration:
             self.cache_ratio = min(1.0, self.cache_ratio + 0.01)
             self.threshold = max(0.0, self.threshold - 0.001)
@@ -290,30 +293,34 @@ class Runner():
             self.cache_ratio = max(self.min_cache_ratio, self.cache_ratio - 0.01)
             self.threshold = min(self.max_threshold, self.threshold + 0.001)
 
+    def replace_with_cache(self, func):
+        @wraps(func)
+        def wrapper(filepath):
+            stem_path = Path(filepath).stem
+            if self.have_cache(stem_path) and self.cache_ratio > random.random():
+                return torch.tensor(0)
+            else:
+                return func(filepath)
+        return wrapper
+
     def get_feature(self, upstream, featurizer, datas):
-        # complete the unsave cache task first
-        if self.unsave_cache:
-            self.unsave_cache.get()
-            self.unsave_cache = None
+        # complete the saving cache task first
+        if self.saving_features:
+            self.saving_features.get()
+            self.saving_features = None
 
         # use cache data if have cached
         uncached_data = []
         cached_data = []
         for data in zip(*datas):
-            (uncached_data, cached_data)[self.have_cache(data[2])].append(data)
-
-        # limit the number of cached data by cache_ratio
-        max_cached_num = round(len(datas[0]) * self.cache_ratio)
-        if len(cached_data) > max_cached_num:
-            uncached_data += cached_data[max_cached_num:]
-            cached_data = cached_data[:max_cached_num]
+            (uncached_data, cached_data)[data[0].ndim != 1].append(data)
 
         # create load cache task
         cached_labels, cached_paths, cached_features = [], [], []
         if cached_data:
-            task_start = time.time()
             _, cached_labels, cached_paths = zip(*cached_data)
-            cached_features = self.load_cache_mp(cached_paths)
+            task_start = time.time()
+            loading_features = self.async_load_caches(cached_paths)
 
         # process uncached data
         uncached_wavs, uncached_labels, uncached_paths, uncached_features = [], [], [], []
@@ -329,7 +336,7 @@ class Runner():
         # wait for load cache task
         if cached_data:
             wait_start = time.time()
-            cached_features = cached_features.get()
+            cached_features = loading_features.get()
             task_end = time.time()
             self.update_cache_ratio(task_start, wait_start, task_end)
         else:
@@ -337,7 +344,7 @@ class Runner():
 
         # create save cache task
         if uncached_data:
-            self.unsave_cache = self.save_cache_mp(uncached_paths, uncached_features)
+            self.saving_features = self.async_save_caches(uncached_paths, uncached_features)
 
         labels   = list(cached_labels)   + list(uncached_labels)
         paths    = list(cached_paths)    + list(uncached_paths)
@@ -387,6 +394,11 @@ class Runner():
         records = defaultdict(list)
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
+
+        self.downstream.model.get_dataloader(train_split) # create train dataset
+        origin_load_wav = self.downstream.model.train_dataset._load_wav
+        self.downstream.model.train_dataset._load_wav = self.replace_with_cache(origin_load_wav)
+
         while pbar.n < pbar.total:
             try:
                 dataloader = self.downstream.model.get_dataloader(train_split, epoch=epoch)
@@ -521,6 +533,8 @@ class Runner():
 
         pbar.close()
 
+        self.downstream.model.train_dataset._load_wav = origin_load_wav
+
         if self.args.push_to_hf_hub:
             self.push_to_huggingface_hub()
         if is_leader_process():
@@ -573,7 +587,6 @@ class Runner():
                 )
                 batch_ids.append(batch_id)
 
-        print(f"\ncache ratio: {self.cache_ratio:.2f}")
         save_names = self.downstream.model.log_records(
             split,
             records = records,

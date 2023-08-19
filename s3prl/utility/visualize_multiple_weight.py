@@ -40,8 +40,8 @@ else:
     os.mkdir(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-weights1 = ckpt.get('Featurizer1').get('weights')
-weights2 = ckpt.get('Featurizer2').get('weights')
+weights1 = ckpt.get('iFeaturizer1').get('weights')
+weights2 = ckpt.get('iFeaturizer2').get('weights')
 norm_weights1 = F.softmax(weights1, dim=-1).cpu().double().tolist()
 norm_weights2 = F.softmax(weights2, dim=-1).cpu().double().tolist()
 print('Normalized weights of wavlm+: ', norm_weights1)

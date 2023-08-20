@@ -4,6 +4,7 @@ from typing import List, Tuple, Callable, Any
 from functools import wraps
 import multiprocessing.dummy as mp
 from pathlib import Path
+import h5py as h5
 
 import torch
 from torch import nn
@@ -13,23 +14,26 @@ from torch import Tensor
 class CacheModule:
     def __init__(self,
                  process_func: Callable,
-                 cache_dir: str,
+                 cache_path: str,
                  device: str,
                  num_worker: int = None,
                  sep: str = '-'):
         self.process_func = process_func
-        self.cache_dir = Path(cache_dir)
+        self.cache_path = Path(cache_path)
         self.device = device
         self.num_worker = num_worker or os.cpu_count()
         self.sep = sep
 
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         assert len(self.sep) == 1, f'seq must be a single character, got {self.sep}'
 
+        self.cache_file = h5.File(self.cache_path, 'w')
         self.pool = mp.Pool(self.num_worker)
         self.saving_features = None
 
     def __del__(self):
+        if hasattr(self, 'cache_file') and self.cache_file:
+            self.cache_file.close()
         if hasattr(self, 'pool') and self.pool:
             self.pool.close()
             self.pool.join()
@@ -37,17 +41,15 @@ class CacheModule:
             self.saving_features.get()
 
     def _parse_cache_path(self, wavname):
-        *dirs, cache_name = wavname.split(self.sep)
-        return self.cache_dir.joinpath(*dirs, f"{cache_name}.npy")
+        return wavname.replace(self.sep, '/')
 
     def have_cached(self, wavname):
-        return self._parse_cache_path(wavname).is_file()
+        return self._parse_cache_path(wavname) in self.cache_file
 
     def _save_cache(self, wavname, feature):
         np_feature = feature.cpu().numpy()
         cache_path = self._parse_cache_path(wavname)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(cache_path, np_feature)
+        self.cache_file.create_dataset(cache_path, data=np_feature)
 
     def async_save_caches(self, wavnames: List[str], features: List[Tensor]):
         if self.saving_features:
@@ -56,7 +58,7 @@ class CacheModule:
 
     def _load_cache(self, wavname):
         cache_path = self._parse_cache_path(wavname)
-        return torch.from_numpy(np.load(cache_path))
+        return torch.from_numpy(self.cache_file[cache_path][:])
 
     def with_cache(self, func):
         @wraps(func)

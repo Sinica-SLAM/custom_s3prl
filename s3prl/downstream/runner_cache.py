@@ -97,7 +97,7 @@ class RunnerCache():
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
         self.cache = self._get_cache()
-        print(f"[Runner] - Use cache at {self.cache.cache_dir}")
+        print(f"[Runner] - Use cache at {self.cache.cache_path}")
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -192,7 +192,7 @@ class RunnerCache():
         assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
         dataset_name = dataset_name[0]
 
-        cache_dir = Path(libri_root)/"cache"/upstream_name/dataset_name/layer
+        cache_dir = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
         return CacheModule(self.process_wavs, cache_dir, self.args.device)
 
 

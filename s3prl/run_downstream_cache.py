@@ -218,9 +218,12 @@ def main():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    runner = RunnerCache(args, config) if args.cache else Runner(args, config)
-    eval(f'runner.{args.mode}')()
-
+    if args.cache:
+        with RunnerCache(args, config) as runner:
+            eval(f'runner.{args.mode}')()
+    else:
+        runner = Runner(args, config)
+        eval(f'runner.{args.mode}')()
 
 if __name__ == '__main__':
     main()

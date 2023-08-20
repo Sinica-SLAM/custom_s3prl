@@ -27,29 +27,40 @@ class CacheModule:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         assert len(self.sep) == 1, f'seq must be a single character, got {self.sep}'
 
-        self.cache_file = h5.File(self.cache_path, 'w')
+        self.cache_writer = h5.File(self.cache_path, 'a', libver='latest')
+        self.cache_reader = h5.File(self.cache_path, 'r', libver='latest', swmr=True)
         self.pool = mp.Pool(self.num_worker)
         self.saving_features = None
 
     def __del__(self):
-        if hasattr(self, 'cache_file') and self.cache_file:
-            self.cache_file.close()
+        self.close()
+
+    def close(self):
         if hasattr(self, 'pool') and self.pool:
             self.pool.close()
             self.pool.join()
+            del self.pool
+        if hasattr(self, 'cache_writer') and self.cache_writer:
+            self.cache_writer.close()
+            del self.cache_writer
+        if hasattr(self, 'cache_reader') and self.cache_reader:
+            self.cache_reader.close()
+            del self.cache_reader
         if hasattr(self, 'saving_features') and self.saving_features:
             self.saving_features.get()
+            del self.saving_features
 
     def _parse_cache_path(self, wavname):
         return wavname.replace(self.sep, '/')
 
     def have_cached(self, wavname):
-        return self._parse_cache_path(wavname) in self.cache_file
+        return self._parse_cache_path(wavname) in self.cache_reader
 
     def _save_cache(self, wavname, feature):
-        np_feature = feature.cpu().numpy()
-        cache_path = self._parse_cache_path(wavname)
-        self.cache_file.create_dataset(cache_path, data=np_feature)
+        if not self.have_cached(wavname):
+            np_feature = feature.cpu().numpy()
+            feature_path = self._parse_cache_path(wavname)
+            self.cache_writer.create_dataset(feature_path, data=np_feature, compression='lzf', shuffle=True)
 
     def async_save_caches(self, wavnames: List[str], features: List[Tensor]):
         if self.saving_features:
@@ -58,7 +69,7 @@ class CacheModule:
 
     def _load_cache(self, wavname):
         cache_path = self._parse_cache_path(wavname)
-        return torch.from_numpy(self.cache_file[cache_path][:])
+        return torch.from_numpy(self.cache_reader[cache_path][:])
 
     def with_cache(self, func):
         @wraps(func)
@@ -72,7 +83,7 @@ class CacheModule:
     def _np_to_device(self, array, *args, **kwargs):
          return torch.FloatTensor(array).to(self.device, *args, **kwargs)
 
-    def get_features(self, wavs, labels, wavnames):
+    def get_features(self, wavs, labels, wavnames, save=True):
         # use cache data if have cached
         uncached_datas, cached_datas = [], []
         for data in zip(wavs, labels, wavnames):
@@ -93,10 +104,8 @@ class CacheModule:
         # process uncached data
         if uncached_datas:
             uncached_features = self.process_func(uncached_wavs)
-            self.async_save_caches(uncached_names, uncached_features)
-
-        if cached_datas:
-            torch.cuda.current_stream().synchronize()
+            if save:
+                self.async_save_caches(uncached_names, uncached_features)
 
         # merge cached and uncached data
         features = list(cached_features) + list(uncached_features)

@@ -8,7 +8,6 @@ import random
 import tempfile
 import importlib
 from pathlib import Path
-from functools import partial
 
 import torch
 import torchaudio
@@ -96,8 +95,14 @@ class RunnerCache():
         self.downstream = self._get_downstream()
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
+    def __enter__(self):
         self.cache = self._get_cache()
-        print(f"[Runner] - Use cache at {self.cache.cache_path}")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if hasattr(self, 'cache'):
+            self.cache.close()
+            del self.cache
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -137,7 +142,7 @@ class RunnerCache():
             print(f"pip install -r {dependencies}")
             print()
 
-            from expert import UpstreamExpert
+            from expert import UpstreamExpert # type: ignore
             Upstream = UpstreamExpert
             ckpt_path = os.path.join(filepath, self.args.upstream_model_name)
         else:
@@ -192,8 +197,9 @@ class RunnerCache():
         assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
         dataset_name = dataset_name[0]
 
-        cache_dir = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
-        return CacheModule(self.process_wavs, cache_dir, self.args.device)
+        cache_path = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
+        print(f"[Runner] - Use cache at {cache_path}")
+        return CacheModule(self.process_wavs, cache_path, self.args.device)
 
 
     def _get_downstream(self):
@@ -238,6 +244,11 @@ class RunnerCache():
         model_card = MODEL_CARD_MARKDOWN.format(upstream_model=self.args.upstream)
         with open(os.path.join(path, "README.md"), "w") as f:
             f.write(model_card)
+
+    def wrap_dataset(self, split):
+        self.downstream.model.get_dataloader(split) # create dataset
+        split_dataset = eval(f"self.downstream.model.{split}_dataset")
+        split_dataset._load_wav = self.cache.with_cache(split_dataset._load_wav)
 
     def process_wavs(self, wavs):
         with torch.no_grad():
@@ -289,9 +300,8 @@ class RunnerCache():
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
 
-        self.downstream.model.get_dataloader(train_split) # create train dataset
-        origin_load_wav = self.downstream.model.train_dataset._load_wav
-        self.downstream.model.train_dataset._load_wav = self.cache.with_cache(origin_load_wav)
+        # wrap dataset
+        self.wrap_dataset(train_split)
 
         while pbar.n < pbar.total:
             try:
@@ -425,8 +435,6 @@ class RunnerCache():
 
         pbar.close()
 
-        self.downstream.model.train_dataset._load_wav = origin_load_wav
-
         if self.args.push_to_hf_hub:
             self.push_to_huggingface_hub()
         if is_leader_process():
@@ -458,6 +466,9 @@ class RunnerCache():
             trainings.append(entry.model.training)
             entry.model.eval()
 
+        # wrap dataset
+        self.wrap_dataset(split)
+
         # prepare data
         dataloader = self.downstream.model.get_dataloader(split)
         evaluate_ratio = float(self.config["runner"].get("evaluate_ratio", 1))
@@ -469,7 +480,7 @@ class RunnerCache():
             if batch_id > evaluate_steps:
                 break
 
-            features, labels, names = self.cache.get_features(wavs, labels, wavnames)
+            features, labels, names = self.cache.get_features(wavs, labels, wavnames, save=False)
 
             with torch.no_grad():
                 self.downstream.model(

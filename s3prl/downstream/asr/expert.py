@@ -134,13 +134,15 @@ class DownstreamExpert(nn.Module):
             sampler=sampler,
             num_workers=self.datarc['num_workers'],
             collate_fn=dataset.collate_fn,
+            pin_memory=True,
         )
 
     def _get_eval_dataloader(self, dataset):
         return DataLoader(
             dataset, batch_size=1,
             shuffle=False, num_workers=self.datarc['num_workers'],
-            collate_fn=dataset.collate_fn
+            collate_fn=dataset.collate_fn,
+            pin_memory=True
         )
 
     def _compute_metrics(self, pred_tokens_all, pred_words_all, target_tokens_all, target_words_all):

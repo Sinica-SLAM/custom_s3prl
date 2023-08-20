@@ -11,7 +11,8 @@ from argparse import Namespace
 from torch.distributed import is_initialized, get_world_size
 
 from s3prl import hub
-from s3prl.downstream.runner_cache import Runner
+from s3prl.downstream.runner import Runner
+from s3prl.downstream.runner_cache import RunnerCache
 from s3prl.utility.helper import backup, get_time_tag, hack_isinstance, is_leader_process, override
 
 from huggingface_hub import HfApi, HfFolder
@@ -68,6 +69,7 @@ def get_downstream_args():
     parser.add_argument('--upstream_feature_normalize', action='store_true', help='Specify whether to normalize hidden features before weighted sum')
     parser.add_argument('--upstream_model_name', default="model.pt", help='The name of the model file in the HuggingFace Hub repo.')
     parser.add_argument('--upstream_revision', help="The commit hash of the specified HuggingFace Repository")
+    parser.add_argument('-C', '--cache', action='store_true', help='Cache upstream features on disk to speed up experiments')
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream
@@ -179,9 +181,10 @@ def main():
             original_world = ckpt['WorldSize']
             assert now_world == original_world, f'{now_world} != {original_world}'
 
-    assert args.upstream_feature_selection == "hidden_states" and args.upstream_layer_selection is not None, \
-        "Need to specify which layer to use for downstream training. "
-    assert args.upstream_trainable is False, "Upstream model should be frozen for downstream training. "
+    if args.cache is True:
+        assert args.upstream_feature_selection == "hidden_states" and args.upstream_layer_selection is not None, \
+            "Need to specify which layer to use for downstream training. "
+        assert args.upstream_trainable is False, "Upstream model should be frozen for downstream training. "
 
     if args.hub == "huggingface":
         args.from_hf_hub = True
@@ -215,7 +218,7 @@ def main():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    runner = Runner(args, config)
+    runner = RunnerCache(args, config) if args.cache else Runner(args, config)
     eval(f'runner.{args.mode}')()
 
 

@@ -7,7 +7,7 @@ runner:
   save_step: 500
   max_keep: 1
   eval_dataloaders:
-    - dev-clean
+    - dev
 
 optimizer:
   name: TorchOptim
@@ -38,17 +38,15 @@ specaug:
 
 downstream_expert:
   datarc:
-    train: ['train-clean-100']
-    dev-clean: ['dev-clean']
-    dev-other: ['dev-other']
-    test-clean: ['test-clean']
-    test-other: ['test-other']
-    num_workers: 12
+    train: ['hakka1-train']
+    dev: ['hakka1-dev']
+    test: ['hakka1-test']
+    num_workers: 16
     train_batch_size: 32
     batch_size: 32
     eval_batch_size: 1
-    libri_root: './data/HakkaRoot'
-    bucket_file: './data/len_for_bucket'
+    kaldi_root: './data/HakkaRoot/HakkaCorpus'
+    bucket_file: './data/HakkaRoot/len_for_bucket'
     dict_path: "./downstream/asr_kaldi/char.dict"
 
     zero_infinity: True

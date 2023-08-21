@@ -120,7 +120,7 @@ class SequenceDataset(Dataset):
             transcript = transcript.upper()
             return " ".join(list(transcript.replace(" ", "|"))) + " |"
 
-        id_trsp_df = pd.DataFrame(columns=['id', 'transcript'])
+        id_trsp_ls = []
         for meta_dir in table['meta_dir'].unique():
             with open(os.path.join(self.kaldi_root, meta_dir, "text")) as text_f:
                 for line in text_f.readlines():
@@ -128,8 +128,9 @@ class SequenceDataset(Dataset):
                     transcript = ' '.join(transcript)
                     transcript = process_trans(transcript)
 
-                    id_trsp_df.append({'id': id, 'transcript': transcript}, ignore_index=True)
+                    id_trsp_ls.append({'id': id, 'transcript': transcript})
 
+        id_trsp_df = pd.DataFrame(id_trsp_ls)
         id_path_trsp_df = pd.merge(table, id_trsp_df, on='id')
 
         file_names = [self._parse_x_name(x) for x in id_path_trsp_df['file_path']]

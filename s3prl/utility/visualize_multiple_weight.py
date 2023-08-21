@@ -40,22 +40,30 @@ else:
     os.mkdir(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-weights1 = ckpt.get('Featurizer1').get('weights')
-weights2 = ckpt.get('Featurizer2').get('weights')
+weights1 = ckpt.get('iFeaturizer1').get('weights')
+weights2 = ckpt.get('iFeaturizer2').get('weights')
 norm_weights1 = F.softmax(weights1, dim=-1).cpu().double().tolist()
 norm_weights2 = F.softmax(weights2, dim=-1).cpu().double().tolist()
 print('Normalized weights of wavlm+: ', norm_weights1)
 print('Normalized weights of hubert: ', norm_weights2)
+lamb = ckpt.get('Fusioner').get('lamb')
+if(lamb):
+    true_lamb = torch.sigmoid(lamb).item()
+    print('Lambda: ', true_lamb)
 
 upstream1 = args.upstream1
 upstream2 = args.upstream2
 # plot weights
 x = range(1, len(norm_weights1)+1)
-plt.bar(x, norm_weights1, 0.3, align='edge', color='deepskyblue')
-plt.bar(x, norm_weights2, -0.3, align='edge', color='orange')
+if(lamb):
+    plt.bar(x, [true_lamb*w for w in norm_weights1], 0.3, align='edge', color='deepskyblue')
+    plt.bar(x, [(1-true_lamb)*w for w in norm_weights2], -0.3, align='edge', color='orange')
+else:
+    plt.bar(x, norm_weights1, 0.3, align='edge', color='deepskyblue')
+    plt.bar(x, norm_weights2, -0.3, align='edge', color='orange')
 # set xticks and ylim
 plt.xticks(x, [str(i-1) for i in x])
-plt.ylim(0, 0.4)
+# plt.ylim(0, 0.4)
 # set names
 plt.title(f'Distribution of normalized weight - {args.name}')
 plt.xlabel('Layer ID (First -> Last)')

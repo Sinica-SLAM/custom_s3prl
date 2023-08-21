@@ -98,15 +98,7 @@ class RunnerCache():
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
     def __enter__(self):
-        if self.args.use_cache \
-           and not self.upstream.trainable \
-           and not self.featurizer.trainable:
-            self.use_cache = True
-        else:
-            print(f"[Runner] - Don't use cache")
-            self.use_cache = False
-
-        self.cache = self._get_cache() if self.use_cache else None
+        self.cache = self._get_cache()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -187,14 +179,6 @@ class RunnerCache():
 
 
     def _get_featurizer(self):
-        model = Featurizer(
-            upstream = self.upstream.model,
-            feature_selection = self.args.upstream_feature_selection,
-            layer_selection = self.args.upstream_layer_selection,
-            upstream_device = self.args.device,
-            normalize = self.args.upstream_feature_normalize,
-        ).to(self.args.device)
-
         if self.args.upstream_feature_selection == 'hidden_states' \
             and self.args.upstream_layer_selection is not None:
             print(f"[Runner] - Featurizer is not trainable")
@@ -202,6 +186,14 @@ class RunnerCache():
         else:
             print(f"[Runner] - Featurizer is trainable")
             trainable = True
+
+        model = Featurizer(
+            upstream = self.upstream.model,
+            feature_selection = self.args.upstream_feature_selection,
+            layer_selection = self.args.upstream_layer_selection,
+            upstream_device = self.args.device,
+            normalize = self.args.upstream_feature_normalize,
+        ).to(self.args.device)
 
         return self._init_model(
             model = model,
@@ -221,8 +213,12 @@ class RunnerCache():
         dataset_name = dataset_name[0]
 
         cache_path = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
-        print(f"[Runner] - Use cache at {cache_path}")
-        return CacheModule(self.process_wavs, cache_path, self.args.device)
+        self.use_cache = not self.upstream.trainable and not self.featurizer.trainable and self.args.use_cache
+        if self.use_cache:
+            print(f"[Runner] - Use cache at {cache_path}")
+        else:
+            print(f"[Runner] - Do not use cache")
+        return CacheModule(self.process_wavs, cache_path, self.args.device, use_cache=self.use_cache)
 
 
     def _get_downstream(self):
@@ -269,9 +265,12 @@ class RunnerCache():
             f.write(model_card)
 
     def wrap_dataset(self, split: str):
-        self.downstream.model.get_dataloader(split) # create dataset
-        split_dataset = eval(f"self.downstream.model.{split}_dataset")
-        split_dataset._load_wav = self.cache.with_cache(split_dataset._load_wav)
+        if not hasattr(self.downstream.model, f"{split}_dataset"):
+            self.downstream.model.get_dataloader(split) # create dataset
+        split_dataset = getattr(self.downstream.model, f"{split}_dataset")
+        if not hasattr(split_dataset, "_have_wrap_cache"):
+            split_dataset._load_wav = self.cache.with_cache(split_dataset._load_wav)
+            setattr(split_dataset, "_have_wrap_cache", True)
 
     def process_wavs(self, wavs: List[Tensor]) -> List[Tensor]:
         if self.upstream.trainable and self.training:
@@ -333,8 +332,7 @@ class RunnerCache():
         train_split = self.config['runner'].get("train_dataloader", "train")
 
         # wrap dataset
-        if self.use_cache:
-            self.wrap_dataset(train_split)
+        self.wrap_dataset(train_split)
 
         while pbar.n < pbar.total:
             try:
@@ -355,11 +353,7 @@ class RunnerCache():
                     global_step = pbar.n + 1
 
                     self.training = True
-                    if self.use_cache:
-                        features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
-                    else:
-                        wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
-                        features = self.process_wavs(wavs)
+                    features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
 
                     if specaug:
                         features, _ = specaug(features)
@@ -505,8 +499,7 @@ class RunnerCache():
             entry.model.eval()
 
         # wrap dataset
-        if self.use_cache:
-            self.wrap_dataset(split)
+        self.wrap_dataset(split)
 
         # prepare data
         dataloader = self.downstream.model.get_dataloader(split)
@@ -520,10 +513,7 @@ class RunnerCache():
                 break
 
             self.training = False
-            if self.use_cache:
-                features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
-            else:
-                features = self.process_wavs(wavs)
+            features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
 
             with torch.no_grad():
                 self.downstream.model(

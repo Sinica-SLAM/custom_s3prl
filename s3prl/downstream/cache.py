@@ -35,6 +35,10 @@ class CacheModule:
             self.pool = mp.Pool(self.num_worker)
             self.saving_features = None
 
+            print(f"[CacheModule] - Use cache at {cache_path}")
+        else:
+            print(f"[CacheModule] - Don't use cache")
+
     def __del__(self):
         self.close()
 
@@ -62,7 +66,7 @@ class CacheModule:
         except:
             print(f'Error when checking cache for {wavname}')
             self.close()
-            return False
+            raise
 
     def _save_cache(self, wavname, feature):
         if not self.have_cached(wavname):
@@ -77,7 +81,7 @@ class CacheModule:
 
     def _load_cache(self, wavname):
         cache_path = self._parse_cache_path(wavname)
-        return torch.from_numpy(self.cache_reader[cache_path][:])
+        return self.cache_reader[cache_path][:]
 
     def with_cache(self, func):
         @wraps(func)
@@ -91,33 +95,34 @@ class CacheModule:
     def _to_tensor(self, array, *args, **kwargs):
          return torch.FloatTensor(array).to(self.device, *args, **kwargs)
 
-    def get_features(self, wavs: List[np.ndarray], labels, wavnames: List[str]) -> Tuple[List[Tensor], List[Any], List[str]]:
+    def get_features(self, wavs: List[np.ndarray], wavnames: List[str], save=True) -> List[Tensor]:
         # use cache data if have cached
-        uncached_datas, cached_datas = [], []
-        for data in zip(wavs, labels, wavnames):
-            (uncached_datas, cached_datas)[data[0].ndim != 1].append(data) # wav is 1-dim
+        cached_states = [wav.ndim != 1 for wav in wavs]
+        cached_datas = [(wav, wavname) for wav, wavname, cached in zip(wavs, wavnames, cached_states) if cached]
+        uncached_datas = [(wav, wavname) for wav, wavname, cached in zip(wavs, wavnames, cached_states) if not cached]
 
         # move uncached wavs to device
-        uncached_features, uncached_labels, uncached_names = [], [], []
+        uncached_features = []
         if uncached_datas:
-            uncached_wavs, uncached_labels, uncached_names = zip(*uncached_datas)
+            uncached_wavs, uncached_names = zip(*uncached_datas)
             uncached_wavs = [self._to_tensor(w) for w in uncached_wavs]
 
         # move cached features to device
-        cached_features, cached_labels, cached_names = [], [], []
+        cached_features = []
         if cached_datas:
-            cached_features, cached_labels, cached_names = zip(*cached_datas)
+            cached_features, _ = zip(*cached_datas)
             cached_features = [self._to_tensor(f, non_blocking=True) for f in cached_features]
 
         # process uncached data
         if uncached_datas:
             uncached_features = self.process_func(uncached_wavs)
-            if self.use_cache:
+            if self.use_cache and save:
                 self.async_save_caches(uncached_names, uncached_features)
 
         # merge cached and uncached data
-        features = list(cached_features) + list(uncached_features)
-        labels   = list(cached_labels)   + list(uncached_labels)
-        wavnames = list(cached_names)    + list(uncached_names)
+        features = []
+        for cached in cached_states:
+            features.append(cached_features.pop(0) if cached else uncached_features.pop(0))
+        assert not uncached_features and not cached_features
 
-        return features, labels, wavnames
+        return features

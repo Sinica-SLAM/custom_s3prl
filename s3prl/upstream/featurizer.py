@@ -1,21 +1,26 @@
 import sys
 from typing import Callable, Dict, List, Tuple, Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 from torch import Tensor
 
 from s3prl.utility.helper import show
 
-from s3prl.upstream.interfaces import UpstreamBase, SAMPLE_RATE, TOLERABLE_SEQLEN_DIFF
+from s3prl.upstream.interfaces import UpstreamBase, SAMPLE_RATE
 
 
-def tolist(feature_lens: List[int], features: Tensor) -> List[Tensor]:
+def tolist(f_lens: List[int], features: Tensor):
     assert features.dim() == 3, "(batch_size, max_seq_len, feat_dim)"
-    features = [f[:l] for f, l in zip(features, feature_lens)]
-    return features
+    feature = [f[:l] for f, l in zip(features, f_lens)]
+    return feature
+
+def padding(features: List[Tensor], padding_value: float = 0) -> Tuple[List[int], Tensor]:
+    feature_lens = [len(f) for f in features]
+    feature = pad_sequence(features, batch_first=True, padding_value=padding_value)
+    return feature_lens, feature
 
 class Featurizer(nn.Module):
     def __init__(
@@ -138,10 +143,12 @@ class Featurizer(nn.Module):
 
     def forward(
         self,
+        paired_wavs: List[Tensor],
         paired_features: Dict[str, Union[Tensor, List[Tensor], Dict[str, Tensor]]],
     ) -> Tensor:
-        feature = self._select_feature(paired_features)
-        if isinstance(feature, (list, tuple)):
-            feature = self._weighted_sum(feature)
+        features = self._select_feature(paired_features)
+        if isinstance(features, (list, tuple)):
+            features = self._weighted_sum(features)
 
-        return feature
+        f_lens = self.get_feature_lens(paired_wavs)
+        return tolist(f_lens, features)

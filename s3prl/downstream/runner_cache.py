@@ -8,10 +8,10 @@ import random
 import tempfile
 import importlib
 from pathlib import Path
-import multiprocessing.dummy as mp
 from typing import List
 
 import torch
+from torch import Tensor
 import torchaudio
 import numpy as np
 from tqdm import tqdm
@@ -24,10 +24,10 @@ from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
 from s3prl.upstream.interfaces import Featurizer
+from s3prl.downstream.cache import CacheModule
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
 from huggingface_hub import HfApi, HfFolder, Repository
-import h5py as h5
 
 SAMPLE_RATE = 16000
 
@@ -82,7 +82,7 @@ class ModelEntry:
         self.interfaces = interfaces
 
 
-class Runner():
+class RunnerCache():
     """
     Used to handle high-level concepts of a ML experiment
     eg. training loop, evaluation loop, upstream propagation, optimization, logging, checkpoint saving
@@ -97,22 +97,14 @@ class Runner():
         self.downstream = self._get_downstream()
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
-        # cache the upstream features to h5 file
-        self.cache_path = Path(
-            self.config['downstream_expert']['datarc']['libri_root']) / \
-            "cache" / \
-            f"{self.args.upstream}" / \
-            self.config['downstream_expert']['datarc']['train'][0] / \
-            f"{self.args.upstream_layer_selection}.h5"
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_worker = self.config['runner'].get('cache_workers') or os.cpu_count()
-        self.cache = h5.File(self.cache_path, "a")
-        self.pool = mp.Pool(self.cache_worker)
+    def __enter__(self):
+        self.cache = self._get_cache()
+        return self
 
-    def __del__(self):
-        self.pool.close()
-        self.pool.join()
-        self.cache.close()
+    def __exit__(self, exc_type, exc_value, traceback):
+        if hasattr(self, 'cache') and self.cache:
+            self.cache.close()
+            del self.cache
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -152,7 +144,7 @@ class Runner():
             print(f"pip install -r {dependencies}")
             print()
 
-            from expert import UpstreamExpert
+            from expert import UpstreamExpert # type: ignore
             Upstream = UpstreamExpert
             ckpt_path = os.path.join(filepath, self.args.upstream_model_name)
         else:
@@ -173,6 +165,11 @@ class Runner():
         if is_initialized() and get_rank() == 0:
             torch.distributed.barrier()
 
+        if self.args.upstream_trainable:
+            print(f"[Runner] - Upstream is trainable")
+        else:
+            print(f"[Runner] - Upstream is not trainable")
+
         return self._init_model(
             model = model,
             name = 'Upstream',
@@ -182,6 +179,14 @@ class Runner():
 
 
     def _get_featurizer(self):
+        if self.args.upstream_feature_selection == 'hidden_states' \
+            and self.args.upstream_layer_selection is not None:
+            print(f"[Runner] - Featurizer is not trainable")
+            trainable = False
+        else:
+            print(f"[Runner] - Featurizer is trainable")
+            trainable = True
+
         model = Featurizer(
             upstream = self.upstream.model,
             feature_selection = self.args.upstream_feature_selection,
@@ -193,9 +198,27 @@ class Runner():
         return self._init_model(
             model = model,
             name = 'Featurizer',
-            trainable = True,
+            trainable = trainable,
             interfaces = ['output_dim', 'downsample_rate']
         )
+
+    def _get_cache(self):
+        libri_root = self.config['downstream_expert']['datarc']['libri_root']
+        upstream_name = self.args.upstream
+        dataset_name = self.config['downstream_expert']['datarc']['train']
+        layer = str(self.args.upstream_layer_selection)
+
+        assert os.path.exists(libri_root), f"libri_root {libri_root} does not exist"
+        assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
+        dataset_name = dataset_name[0]
+
+        cache_path = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
+        self.use_cache = not self.upstream.trainable and not self.featurizer.trainable and self.args.use_cache
+        if self.use_cache:
+            print(f"[Runner] - Use cache at {cache_path}")
+        else:
+            print(f"[Runner] - Do not use cache")
+        return CacheModule(self.process_wavs, cache_path, self.args.device, use_cache=self.use_cache)
 
 
     def _get_downstream(self):
@@ -241,55 +264,29 @@ class Runner():
         with open(os.path.join(path, "README.md"), "w") as f:
             f.write(model_card)
 
-    def have_cache(self, filepath: str) -> bool:
-        return filepath in self.cache
+    def wrap_dataset(self, split: str):
+        if not hasattr(self.downstream.model, f"{split}_dataset"):
+            self.downstream.model.get_dataloader(split) # create dataset
+        split_dataset = getattr(self.downstream.model, f"{split}_dataset")
+        if not hasattr(split_dataset, "_have_wrap_cache"):
+            split_dataset._load_wav = self.cache.with_cache(split_dataset._load_wav)
+            setattr(split_dataset, "_have_wrap_cache", True)
 
-    def save_cache(self, filepath: str, feature : torch.Tensor):
-        np_feature = feature.numpy(force=True)
-        self.cache.create_dataset(filepath, data=np_feature, compression="lzf")
-
-    def load_cache(self, filepath: str) -> torch.Tensor:
-        feature =  self.cache[filepath][:]
-        return torch.from_numpy(feature)
-
-    def load_cache_mp(self, filepaths: List[str]):
-        return self.pool.map_async(self.load_cache, filepaths)
-
-    def get_feature(self, upstream, featurizer, datas):
-        # use cache if possible
-        uncached_data = []
-        cached_data = []
-        for data in zip(*datas):
-            (uncached_data, cached_data)[self.have_cache(data[2])].append(data)
-
-        cached_wavs, cached_labels, cached_paths, cached_features = [], [], [], []
-        if cached_data:
-            cached_wavs, cached_labels, cached_paths = zip(*cached_data)
-            cached_features = self.load_cache_mp(cached_paths)
-
-        uncached_wavs, uncached_labels, uncached_paths, uncached_features = [], [], [], []
-        if uncached_data:
-            uncached_wavs, uncached_labels, uncached_paths = zip(*uncached_data)
-
-            uncached_wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in uncached_wavs]
-
+    def process_wavs(self, wavs: List[Tensor]) -> List[Tensor]:
+        if self.upstream.trainable and self.training:
+            features = self.upstream.model(wavs)
+        else:
             with torch.no_grad():
-                uncached_features = upstream.model(uncached_wavs)
-                uncached_features = featurizer.model(uncached_wavs, uncached_features)
+                features = self.upstream.model(wavs)
 
-            for path, feature in zip(uncached_paths, uncached_features):
-                self.save_cache(path, feature)
+        if (self.upstream.trainable or self.featurizer.trainable) \
+            and self.training:
+            features = self.featurizer.model(wavs, features)
+        else:
+            with torch.no_grad():
+                features = self.featurizer.model(wavs, features)
 
-        if cached_data:
-            cached_features = cached_features.get()
-
-        labels   = list(cached_labels)   + list(uncached_labels)
-        paths    = list(cached_paths)    + list(uncached_paths)
-        features = list(cached_features) + list(uncached_features)
-
-        features = [feature.to(self.args.device) for feature in features]
-
-        return features, labels, paths
+        return features
 
     def train(self):
         # trainable parameters and train/eval mode
@@ -333,6 +330,10 @@ class Runner():
         records = defaultdict(list)
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
+
+        # wrap dataset
+        self.wrap_dataset(train_split)
+
         while pbar.n < pbar.total:
             try:
                 dataloader = self.downstream.model.get_dataloader(train_split, epoch=epoch)
@@ -344,21 +345,22 @@ class Runner():
                 else:
                     raise
 
-            for batch_id, datas in enumerate(tqdm(dataloader, dynamic_ncols=True, desc='train', file=tqdm_file)):
+            for batch_id, (wavs, labels, wavnames) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc='train', file=tqdm_file)):
                 # try/except block for forward/backward
                 try:
                     if pbar.n >= pbar.total:
                         break
                     global_step = pbar.n + 1
 
-                    features, labels, paths = self.get_feature(self.upstream, self.featurizer, datas)
+                    self.training = True
+                    features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
 
                     if specaug:
                         features, _ = specaug(features)
 
                     loss = self.downstream.model(
                         train_split,
-                        features, labels, paths,
+                        features, labels, wavnames,
                         records = records,
                     )
                     batch_ids.append(batch_id)
@@ -470,6 +472,7 @@ class Runner():
         if is_leader_process():
             logger.close()
 
+
     def evaluate(self, split=None, logger=None, global_step=0):
         """evaluate function will always be called on a single process even during distributed training"""
 
@@ -495,6 +498,9 @@ class Runner():
             trainings.append(entry.model.training)
             entry.model.eval()
 
+        # wrap dataset
+        self.wrap_dataset(split)
+
         # prepare data
         dataloader = self.downstream.model.get_dataloader(split)
         evaluate_ratio = float(self.config["runner"].get("evaluate_ratio", 1))
@@ -502,16 +508,17 @@ class Runner():
 
         batch_ids = []
         records = defaultdict(list)
-        for batch_id, datas in enumerate(tqdm(dataloader, dynamic_ncols=True, desc=split, total=evaluate_steps)):
+        for batch_id, (wavs, labels, wavnames) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc=split, total=evaluate_steps)):
             if batch_id > evaluate_steps:
                 break
 
-            features, labels, paths = self.get_feature(self.upstream, self.featurizer, datas)
+            self.training = False
+            features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
 
             with torch.no_grad():
                 self.downstream.model(
                     split,
-                    features, labels, paths,
+                    features, labels, wavnames,
                     records = records,
                     batch_id = batch_id,
                 )
@@ -632,3 +639,4 @@ class Runner():
         print("[Runner] - Pushing model files to the Hub ...")
         model_repo.push_to_hub()
         print("[Runner] - Training run complete!")
+        

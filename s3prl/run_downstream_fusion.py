@@ -11,8 +11,7 @@ from argparse import Namespace
 from torch.distributed import is_initialized, get_world_size
 
 from s3prl import hub
-from s3prl.downstream.runner import Runner
-from s3prl.downstream.runner_cache import RunnerCache
+from s3prl.downstream.runner_fusion import Runner
 from s3prl.utility.helper import backup, get_time_tag, hack_isinstance, is_leader_process, override
 
 from huggingface_hub import HfApi, HfFolder
@@ -27,7 +26,7 @@ def get_downstream_args():
 
     # distributed training
     parser.add_argument('--backend', default='nccl', help='The backend for distributed training')
-    parser.add_argument('--local_rank', type=int,
+    parser.add_argument('--local-rank', type=int,
                         help=f'The GPU id this process should use while distributed training. \
                                None when not launched by torch.distributed.launch')
 
@@ -54,30 +53,31 @@ def get_downstream_args():
         help='The model Hub used to retrieve the upstream model.')
 
     upstreams = [attr for attr in dir(hub) if attr[0] != '_']
-    parser.add_argument('-u', '--upstream',  help=""
+    parser.add_argument('-u1', '--upstream1',  help=""
         'Upstreams with \"_local\" or \"_url\" postfix need local ckpt (-k) or config file (-g). '
         'Other upstreams download two files on-the-fly and cache them, so just -u is enough and -k/-g are not needed. '
         'Please check upstream/README.md for details. '
         f"Available options in S3PRL: {upstreams}. "
     )
-    parser.add_argument('-k', '--upstream_ckpt', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='Only set when the specified upstream need it')
-    parser.add_argument('-g', '--upstream_model_config', help='The config file for constructing the pretrained model')
+    parser.add_argument('-u2', '--upstream2',  help="same as upstream1")
+
+    parser.add_argument('-k1', '--upstream_ckpt1', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='Only set when the specified upstream need it')
+    parser.add_argument('-k2', '--upstream_ckpt2', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='same as upstream_ckpt1')
     parser.add_argument('-r', '--upstream_refresh', action='store_true', help='Re-download cached ckpts for on-the-fly upstream variants')
-    parser.add_argument('-f', '--upstream_trainable', action='store_true', help='Fine-tune, set upstream.train(). Default is upstream.eval()')
-    parser.add_argument('-s', '--upstream_feature_selection', default='hidden_states', help='Specify the layer to be extracted as the representation')
-    parser.add_argument('-l', '--upstream_layer_selection', type=int, help='Select a specific layer for the features selected by -s')
+    parser.add_argument('-f1', '--upstream_trainable1', action='store_true', help='Fine-tune, set upstream.train(). Default is upstream.eval()')
+    parser.add_argument('-f2', '--upstream_trainable2', action='store_true', help='same as upstream_trainable')
+    parser.add_argument('-s1', '--upstream1_feature_selection', default='hidden_states', help='Specify the layer to be extracted as the representation')
+    parser.add_argument('-s2', '--upstream2_feature_selection', default='hidden_states', help='same as upstream_feature_selection1')
+    parser.add_argument('-l1', '--upstream1_layer_selection', type=int, help='Select a specific layer for the features selected by -s1')
+    parser.add_argument('-l2', '--upstream2_layer_selection', type=int, help='same as upstream1_layer_selection')
+    parser.add_argument('-fs','--fusioner', help='Specify the fusion method for the two upstreams')
     parser.add_argument('--upstream_feature_normalize', action='store_true', help='Specify whether to normalize hidden features before weighted sum')
-    parser.add_argument('--upstream_model_name', default="model.pt", help='The name of the model file in the HuggingFace Hub repo.')
-    parser.add_argument('--upstream_revision', help="The commit hash of the specified HuggingFace Repository")
-    parser.add_argument('-C', '--use_cache', action='store_true', help='Cache upstream features on disk to speed up experiments')
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream
     parser.add_argument('-n', '--expname', help='Save experiment at result/downstream/expname')
     parser.add_argument('-p', '--expdir', help='Save experiment at expdir')
     parser.add_argument('-a', '--auto_resume', action='store_true', help='Auto-resume if the expdir contains checkpoints')
-    parser.add_argument('--push_to_hf_hub', default=False, help='Push all files in experiment directory to the Hugging Face Hub. To use this feature you must set HF_USERNAME and HF_PASSWORD as environment variables in your shell')
-    parser.add_argument('--hf_hub_org', help='The Hugging Face Hub organisation to push fine-tuned models to')
 
     # options
     parser.add_argument('--seed', default=1337, type=int)
@@ -142,9 +142,6 @@ def get_downstream_args():
         with open(args.config, 'r') as file:
             config = yaml.load(file, Loader=yaml.FullLoader)
 
-        if args.upstream_model_config is not None and os.path.isfile(args.upstream_model_config):
-            backup_files.append(args.upstream_model_config)
-
     if args.override is not None and args.override.lower() != "none":
         override(args.override, args, config)
         os.makedirs(args.expdir, exist_ok=True)
@@ -181,14 +178,7 @@ def main():
             original_world = ckpt['WorldSize']
             assert now_world == original_world, f'{now_world} != {original_world}'
 
-    if args.hub == "huggingface":
-        args.from_hf_hub = True
-        # Setup auth
-        hf_user = os.environ.get("HF_USERNAME")
-        hf_password = os.environ.get("HF_PASSWORD")
-        huggingface_token = HfApi().login(username=hf_user, password=hf_password)
-        HfFolder.save_token(huggingface_token)
-        print(f"Logged into Hugging Face Hub with user: {hf_user}")
+    assert args.hub != "huggingface"
 
     # Save command
     if is_leader_process():
@@ -213,8 +203,9 @@ def main():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    with RunnerCache(args, config) as runner:
-        eval(f'runner.{args.mode}')()
+    runner = Runner(args, config)
+    eval(f'runner.{args.mode}')()
+
 
 if __name__ == '__main__':
     main()

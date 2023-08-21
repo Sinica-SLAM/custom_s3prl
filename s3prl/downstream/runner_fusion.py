@@ -21,55 +21,13 @@ from torch.distributed import is_initialized, get_rank, get_world_size
 from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
-from s3prl.upstream.interfaces import Featurizer
+from s3prl.upstream.featurizer import Featurizer
+from s3prl.upstream.fusioner import *
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
 from huggingface_hub import HfApi, HfFolder, Repository
 
 SAMPLE_RATE = 16000
-
-MODEL_CARD_MARKDOWN = """---
-datasets:
-- superb
-tags:
-- library:s3prl
-- benchmark:superb
-- type:model
----
-
-# Fine-tuned s3prl model
-
-Upstream Model: {upstream_model}
-
-## Model description
-
-[More information needed]
-
-## Intended uses & limitations
-
-[More information needed]
-
-## How to use
-
-[More information needed]
-
-## Limitations and bias
-
-[More information needed]
-
-## Training data
-
-[More information needed]
-
-## Training procedure
-
-[More information needed]
-
-## Evaluation results
-
-[More information needed]
-
-"""
 
 
 class ModelEntry:
@@ -90,10 +48,18 @@ class Runner():
         self.config = config
         self.init_ckpt = torch.load(self.args.init_ckpt, map_location='cpu') if self.args.init_ckpt else {}
 
-        self.upstream = self._get_upstream()
-        self.featurizer = self._get_featurizer()
+        self.self_fusion = self.args.upstream1 == self.args.upstream2 or self.args.upstream2 is None
+        if self.self_fusion:
+            print(f'[Runner] - Use self fusion , upstream: {self.args.upstream1}')
+        else:
+            print(f'[Runner] - Use cross fusion , upstream1: {self.args.upstream1}, upstream2: {self.args.upstream2}')
+        self.upstream1, self.upstream2 = self._get_upstream()
+        self.ifeaturizer1, self.ifeaturizer2 = self._get_featurizer()
+        self.fusioner = self._get_fusioner()
         self.downstream = self._get_downstream()
-        self.all_entries = [self.upstream, self.featurizer, self.downstream]
+        self.all_entries = [self.upstream1, self.ifeaturizer1, self.ifeaturizer2, self.fusioner, self.downstream]
+        if not self.self_fusion:
+            self.all_entries.append(self.upstream2)
 
 
     def _load_weight(self, model, name):
@@ -118,65 +84,99 @@ class Runner():
 
 
     def _get_upstream(self):
-        if "from_hf_hub" in self.args and self.args.from_hf_hub == True:
-            from huggingface_hub import snapshot_download
-
-            print(f'[Runner] - Downloading upstream model {self.args.upstream} from the Hugging Face Hub')
-            filepath = snapshot_download(self.args.upstream, self.args.upstream_revision, use_auth_token=True)
-            sys.path.append(filepath)
-
-            dependencies = (Path(filepath) / 'requirements.txt').resolve()
-            print("[Dependency] - The downloaded upstream model requires the following dependencies. Please make sure they are installed:")
-            for idx, line in enumerate((Path(filepath) / "requirements.txt").open().readlines()):
-                print(f"{idx}. {line.strip()}")
-            print(f"You can install them by:")
-            print()
-            print(f"pip install -r {dependencies}")
-            print()
-
-            from expert import UpstreamExpert # type: ignore
-            Upstream = UpstreamExpert
-            ckpt_path = os.path.join(filepath, self.args.upstream_model_name)
-        else:
-            Upstream = getattr(hub, self.args.upstream)
-            ckpt_path = self.args.upstream_ckpt
         upstream_refresh = self.args.upstream_refresh
+
+        Upstream1 = getattr(hub, self.args.upstream1)
+        ckpt_path1 = self.args.upstream_ckpt1
+
+        if not self.self_fusion:
+            Upstream2 = getattr(hub, self.args.upstream2)
+            ckpt_path2 = self.args.upstream_ckpt2
 
         if is_initialized() and get_rank() > 0:
             torch.distributed.barrier()
             upstream_refresh = False
 
-        model = Upstream(
-            ckpt = ckpt_path,
-            model_config = self.args.upstream_model_config,
+        model1 = Upstream1(
+            ckpt = ckpt_path1,
+            model_config = None,
             refresh = upstream_refresh,
         ).to(self.args.device)
+
+        if not self.self_fusion:
+            model2 = Upstream2(
+                ckpt = ckpt_path2,
+                model_config = None,
+                refresh = upstream_refresh,
+            ).to(self.args.device)
 
         if is_initialized() and get_rank() == 0:
             torch.distributed.barrier()
 
-        return self._init_model(
-            model = model,
-            name = 'Upstream',
-            trainable = self.args.upstream_trainable,
+        model1 = self._init_model(
+            model = model1,
+            name = 'Upstream1',
+            trainable = self.args.upstream_trainable1,
             interfaces = ["get_downsample_rates"]
         )
 
+        model2 = self._init_model(
+            model = model2,
+            name = 'Upstream2',
+            trainable = self.args.upstream_trainable2,
+            interfaces = ["get_downsample_rates"]
+        ) if not self.self_fusion else None
+
+        return model1, model2
+
 
     def _get_featurizer(self):
-        model = Featurizer(
-            upstream = self.upstream.model,
-            feature_selection = self.args.upstream_feature_selection,
-            layer_selection = self.args.upstream_layer_selection,
+        ifeaturizer1 = Featurizer(
+            upstream = self.upstream1.model,
+            feature_selection = self.args.upstream1_feature_selection,
+            layer_selection = self.args.upstream1_layer_selection,
+            upstream_device = self.args.device,
+            normalize = self.args.upstream_feature_normalize,
+        ).to(self.args.device)
+
+        ifeaturizer2 = Featurizer(
+            upstream = self.upstream1.model if self.self_fusion else self.upstream2.model,
+            feature_selection = self.args.upstream2_feature_selection,
+            layer_selection = self.args.upstream2_layer_selection,
             upstream_device = self.args.device,
             normalize = self.args.upstream_feature_normalize,
         ).to(self.args.device)
 
         return self._init_model(
-            model = model,
-            name = 'Featurizer',
+            model = ifeaturizer1,
+            name = 'iFeaturizer1',
             trainable = True,
-            interfaces = ['output_dim', 'downsample_rate']
+            interfaces = ['output_dim', 'downsample_rate', 'get_feature_lens']
+        ), self._init_model(
+            model = ifeaturizer2,
+            name = 'iFeaturizer2',
+            trainable = True,
+            interfaces = ['output_dim', 'downsample_rate', 'get_feature_lens']
+        )
+
+    def _get_fusioner(self):
+
+        assert self.ifeaturizer1.model.output_dim == self.ifeaturizer2.model.output_dim
+        assert self.ifeaturizer1.model.downsample_rate == self.ifeaturizer2.model.downsample_rate
+
+        Fusioner = eval(self.args.fusioner)
+        fusioner = Fusioner(
+            self.ifeaturizer1.model,
+            self.ifeaturizer2.model,
+            **self.config,
+            **vars(self.args)
+        ).to(self.args.device)
+
+        return self._init_model(
+            model = fusioner,
+            name = 'Fusioner',
+            trainable = True,
+            interfaces = ['upstream_dim', 'downsample_rate']
         )
 
 
@@ -185,8 +185,8 @@ class Runner():
         Downstream = getattr(expert, "DownstreamExpert")
 
         model = Downstream(
-            upstream_dim = self.featurizer.model.output_dim,
-            upstream_rate = self.featurizer.model.downsample_rate,
+            upstream_dim = self.fusioner.model.upstream_dim,
+            upstream_rate = self.fusioner.model.downsample_rate,
             **self.config,
             **vars(self.args)
         ).to(self.args.device)
@@ -217,11 +217,6 @@ class Runner():
         )
         self._load_weight(scheduler, 'Scheduler')
         return scheduler
-
-    def _create_model_card(self, path):
-        model_card = MODEL_CARD_MARKDOWN.format(upstream_model=self.args.upstream)
-        with open(os.path.join(path, "README.md"), "w") as f:
-            f.write(model_card)
 
 
     def train(self):
@@ -285,12 +280,20 @@ class Runner():
                     global_step = pbar.n + 1
 
                     wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
-                    if self.upstream.trainable:
-                        features = self.upstream.model(wavs)
+                    if self.upstream1.trainable:
+                        features1 = self.upstream1.model(wavs)
+                        features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
                     else:
                         with torch.no_grad():
-                            features = self.upstream.model(wavs)
-                    features = self.featurizer.model(wavs, features)
+                            features1 = self.upstream1.model(wavs)
+                            features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
+
+                    features1 = self.ifeaturizer1.model(features1)
+                    features2 = self.ifeaturizer2.model(features2)
+
+                    feature_lens = self.ifeaturizer1.model.get_feature_lens(wavs) 
+
+                    features = self.fusioner.model(features1, features2, feature_lens)
 
                     if specaug:
                         features, _ = specaug(features)
@@ -404,8 +407,6 @@ class Runner():
 
         pbar.close()
 
-        if self.args.push_to_hf_hub:
-            self.push_to_huggingface_hub()
         if is_leader_process():
             logger.close()
 
@@ -448,8 +449,12 @@ class Runner():
 
             wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
             with torch.no_grad():
-                features = self.upstream.model(wavs)
-                features = self.featurizer.model(wavs, features)
+                features1 = self.upstream1.model(wavs)
+                features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
+                features1 = self.ifeaturizer1.model(features1)
+                features2 = self.ifeaturizer2.model(features2)
+                feature_lens = self.ifeaturizer1.model.get_feature_lens(wavs) 
+                features = self.fusioner.model(features1, features2, feature_lens)
                 self.downstream.model(
                     split,
                     features, *others,
@@ -500,76 +505,11 @@ class Runner():
             entry.model.eval().to(self.args.device)
 
         with torch.no_grad():
-            features = self.upstream.model(wavs)
-            features = self.featurizer.model(wavs, features)
+            features1 = self.upstream1.model(wavs)
+            features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
+            features1 = self.ifeaturizer1.model(features1)
+            features2 = self.ifeaturizer2.model(features2)
+            feature_lens = self.ifeaturizer1.model.get_feature_lens(wavs) 
+            features = self.fusioner.model(features1, features2, feature_lens)
+            features = self.fusioner.model(features1, features2)
             self.downstream.model.inference(features, [filename])
-
-    def push_to_huggingface_hub(self):
-        """Creates a downstream repository on the Hub and pushes training artifacts to it."""
-        if self.args.hf_hub_org.lower() != "none":
-            organization = self.args.hf_hub_org
-        else:
-            organization = os.environ.get("HF_USERNAME")
-        huggingface_token = HfFolder.get_token()
-        print(f"[Runner] - Organisation to push fine-tuned model to: {organization}")
-
-        # Extract upstream repository metadata
-        if self.args.hub == "huggingface":
-            model_info = HfApi().model_info(self.args.upstream, token=huggingface_token)
-            downstream_model_id = model_info.sha
-            # Exclude "/" characters from downstream repo ID
-            upstream_model_id = model_info.modelId.replace("/", "__")
-        else:
-            upstream_model_id = self.args.upstream.replace("/", "__")
-            downstream_model_id = str(uuid.uuid4())[:8]
-        repo_name = f"{upstream_model_id}__{downstream_model_id}"
-        # Create downstream repo on the Hub
-        repo_url = HfApi().create_repo(
-            token=huggingface_token,
-            name=repo_name,
-            organization=organization,
-            exist_ok=True,
-            private=False,
-        )
-        print(f"[Runner] - Created Hub repo: {repo_url}")
-
-        # Download repo
-        HF_HUB_DIR = "hf_hub"
-        REPO_ROOT_DIR = os.path.join(self.args.expdir, HF_HUB_DIR, repo_name)
-        REPO_TASK_DIR = os.path.join(REPO_ROOT_DIR, self.args.downstream, self.args.expname)
-        print(f"[Runner] - Cloning Hub repo to {REPO_ROOT_DIR}")
-        model_repo = Repository(
-            local_dir=REPO_ROOT_DIR, clone_from=repo_url, use_auth_token=huggingface_token
-        )
-        # Pull latest changes if they exist
-        model_repo.git_pull()
-
-        # Copy checkpoints, tensorboard logs, and args / configs
-        # Note that this copies all files from the experiment directory,
-        # including those from multiple runs
-        shutil.copytree(self.args.expdir, REPO_TASK_DIR, dirs_exist_ok=True, ignore=shutil.ignore_patterns(HF_HUB_DIR))
-
-        # By default we use model.ckpt in the PreTrainedModel interface, so
-        # rename the best checkpoint to match this convention
-        checkpoints = list(Path(REPO_TASK_DIR).glob("*best*.ckpt"))
-        if len(checkpoints) == 0:
-            print("[Runner] - Did not find a best checkpoint! Using the final checkpoint instead ...")
-            CKPT_PATH = (
-                os.path.join(REPO_TASK_DIR, f"states-{self.config['runner']['total_steps']}.ckpt")
-                )
-        elif len(checkpoints) > 1:
-            print(f"[Runner] - More than one best checkpoint found! Using {checkpoints[0]} as default ...")
-            CKPT_PATH = checkpoints[0]
-        else:
-            print(f"[Runner] - Found best checkpoint {checkpoints[0]}!")
-            CKPT_PATH = checkpoints[0]
-        shutil.move(CKPT_PATH, os.path.join(REPO_TASK_DIR, "model.ckpt"))
-        model_repo.lfs_track("*.ckpt")
-
-        # Write model card
-        self._create_model_card(REPO_ROOT_DIR)
-
-        # Push everything to the Hub
-        print("[Runner] - Pushing model files to the Hub ...")
-        model_repo.push_to_hub()
-        print("[Runner] - Training run complete!")

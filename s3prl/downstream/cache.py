@@ -83,7 +83,7 @@ class CacheModule:
     def _np_to_device(self, array, *args, **kwargs):
          return torch.FloatTensor(array).to(self.device, *args, **kwargs)
 
-    def get_features(self, wavs, labels, wavnames, save=True):
+    def get_features(self, wavs: List[np.ndarray], labels, wavnames: List[str], save=True) -> Tuple[List[Tensor], List[Any], List[str]]:
         # use cache data if have cached
         uncached_datas, cached_datas = [], []
         for data in zip(wavs, labels, wavnames):

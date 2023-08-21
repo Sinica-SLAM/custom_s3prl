@@ -8,8 +8,10 @@ import random
 import tempfile
 import importlib
 from pathlib import Path
+from typing import List
 
 import torch
+from torch import Tensor
 import torchaudio
 import numpy as np
 from tqdm import tqdm
@@ -96,11 +98,19 @@ class RunnerCache():
         self.all_entries = [self.upstream, self.featurizer, self.downstream]
 
     def __enter__(self):
-        self.cache = self._get_cache()
+        if self.args.use_cache \
+           and not self.upstream.trainable \
+           and not self.featurizer.trainable:
+            self.use_cache = True
+        else:
+            print(f"[Runner] - Don't use cache")
+            self.use_cache = False
+
+        self.cache = self._get_cache() if self.use_cache else None
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        if hasattr(self, 'cache'):
+        if hasattr(self, 'cache') and self.cache:
             self.cache.close()
             del self.cache
 
@@ -163,6 +173,11 @@ class RunnerCache():
         if is_initialized() and get_rank() == 0:
             torch.distributed.barrier()
 
+        if self.args.upstream_trainable:
+            print(f"[Runner] - Upstream is trainable")
+        else:
+            print(f"[Runner] - Upstream is not trainable")
+
         return self._init_model(
             model = model,
             name = 'Upstream',
@@ -180,10 +195,18 @@ class RunnerCache():
             normalize = self.args.upstream_feature_normalize,
         ).to(self.args.device)
 
+        if self.args.upstream_feature_selection == 'hidden_states' \
+            and self.args.upstream_layer_selection is not None:
+            print(f"[Runner] - Featurizer is not trainable")
+            trainable = False
+        else:
+            print(f"[Runner] - Featurizer is trainable")
+            trainable = True
+
         return self._init_model(
             model = model,
             name = 'Featurizer',
-            trainable = True,
+            trainable = trainable,
             interfaces = ['output_dim', 'downsample_rate']
         )
 
@@ -245,15 +268,24 @@ class RunnerCache():
         with open(os.path.join(path, "README.md"), "w") as f:
             f.write(model_card)
 
-    def wrap_dataset(self, split):
+    def wrap_dataset(self, split: str):
         self.downstream.model.get_dataloader(split) # create dataset
         split_dataset = eval(f"self.downstream.model.{split}_dataset")
         split_dataset._load_wav = self.cache.with_cache(split_dataset._load_wav)
 
-    def process_wavs(self, wavs):
-        with torch.no_grad():
+    def process_wavs(self, wavs: List[Tensor]) -> List[Tensor]:
+        if self.upstream.trainable and self.training:
             features = self.upstream.model(wavs)
+        else:
+            with torch.no_grad():
+                features = self.upstream.model(wavs)
+
+        if (self.upstream.trainable or self.featurizer.trainable) \
+            and self.training:
             features = self.featurizer.model(wavs, features)
+        else:
+            with torch.no_grad():
+                features = self.featurizer.model(wavs, features)
 
         return features
 
@@ -301,7 +333,8 @@ class RunnerCache():
         train_split = self.config['runner'].get("train_dataloader", "train")
 
         # wrap dataset
-        self.wrap_dataset(train_split)
+        if self.use_cache:
+            self.wrap_dataset(train_split)
 
         while pbar.n < pbar.total:
             try:
@@ -321,7 +354,12 @@ class RunnerCache():
                         break
                     global_step = pbar.n + 1
 
-                    features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
+                    self.training = True
+                    if self.use_cache:
+                        features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
+                    else:
+                        wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
+                        features = self.process_wavs(wavs)
 
                     if specaug:
                         features, _ = specaug(features)
@@ -467,7 +505,8 @@ class RunnerCache():
             entry.model.eval()
 
         # wrap dataset
-        self.wrap_dataset(split)
+        if self.use_cache:
+            self.wrap_dataset(split)
 
         # prepare data
         dataloader = self.downstream.model.get_dataloader(split)
@@ -480,12 +519,16 @@ class RunnerCache():
             if batch_id > evaluate_steps:
                 break
 
-            features, labels, names = self.cache.get_features(wavs, labels, wavnames, save=False)
+            self.training = False
+            if self.use_cache:
+                features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
+            else:
+                features = self.process_wavs(wavs)
 
             with torch.no_grad():
                 self.downstream.model(
                     split,
-                    features, labels, names,
+                    features, labels, wavnames,
                     records = records,
                     batch_id = batch_id,
                 )

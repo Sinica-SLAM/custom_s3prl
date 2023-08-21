@@ -69,7 +69,7 @@ def get_downstream_args():
     parser.add_argument('--upstream_feature_normalize', action='store_true', help='Specify whether to normalize hidden features before weighted sum')
     parser.add_argument('--upstream_model_name', default="model.pt", help='The name of the model file in the HuggingFace Hub repo.')
     parser.add_argument('--upstream_revision', help="The commit hash of the specified HuggingFace Repository")
-    parser.add_argument('-C', '--cache', action='store_true', help='Cache upstream features on disk to speed up experiments')
+    parser.add_argument('-C', '--use_cache', action='store_true', help='Cache upstream features on disk to speed up experiments')
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream
@@ -181,11 +181,6 @@ def main():
             original_world = ckpt['WorldSize']
             assert now_world == original_world, f'{now_world} != {original_world}'
 
-    if args.cache is True:
-        assert args.upstream_feature_selection == "hidden_states" and args.upstream_layer_selection is not None, \
-            "Need to specify which layer to use for downstream training. "
-        assert args.upstream_trainable is False, "Upstream model should be frozen for downstream training. "
-
     if args.hub == "huggingface":
         args.from_hf_hub = True
         # Setup auth
@@ -218,11 +213,7 @@ def main():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    if args.cache:
-        with RunnerCache(args, config) as runner:
-            eval(f'runner.{args.mode}')()
-    else:
-        runner = Runner(args, config)
+    with RunnerCache(args, config) as runner:
         eval(f'runner.{args.mode}')()
 
 if __name__ == '__main__':

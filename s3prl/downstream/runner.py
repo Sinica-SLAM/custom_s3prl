@@ -134,7 +134,7 @@ class Runner():
             print(f"pip install -r {dependencies}")
             print()
 
-            from expert import UpstreamExpert
+            from expert import UpstreamExpert # type: ignore
             Upstream = UpstreamExpert
             ckpt_path = os.path.join(filepath, self.args.upstream_model_name)
         else:

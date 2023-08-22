@@ -55,6 +55,12 @@ def generate_length(args, tr_set):
                 meta_dir = 'data/dev'
             case 'hakka1-test':
                 meta_dir = 'data/test'
+            case 'hakka2-train':
+                meta_dir = 'data2/train'
+            case 'hakka2-dev':
+                meta_dir = 'data2/dev'
+            case 'hakka2-test':
+                meta_dir = 'data2/test'
             case _:
                 raise NotImplementedError
 
@@ -94,7 +100,7 @@ def main():
     # get arguments
     args = get_preprocess_args()
 
-    SETS = ['hakka1-train', 'hakka1-dev', 'hakka1-test']
+    SETS = ['hakka1-train', 'hakka1-dev', 'hakka1-test', 'hakka2-train', 'hakka2-dev', 'hakka2-test']
 
     # Select data sets
     for idx, s in enumerate(SETS):

@@ -2,12 +2,13 @@ import os
 import sys
 import math
 import glob
-import uuid
 import shutil
 import random
 import tempfile
 import importlib
 from pathlib import Path
+from typing import List
+from functools import partial, wraps
 
 import torch
 import torchaudio
@@ -22,10 +23,10 @@ from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
 from s3prl.upstream.featurizer import Featurizer
+from s3prl.downstream.cache import CacheModule
 from s3prl.upstream.fusioner import *
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
-from huggingface_hub import HfApi, HfFolder, Repository
 
 SAMPLE_RATE = 16000
 
@@ -38,7 +39,7 @@ class ModelEntry:
         self.interfaces = interfaces
 
 
-class Runner():
+class RunnerFusion():
     """
     Used to handle high-level concepts of a ML experiment
     eg. training loop, evaluation loop, upstream propagation, optimization, logging, checkpoint saving
@@ -48,11 +49,6 @@ class Runner():
         self.config = config
         self.init_ckpt = torch.load(self.args.init_ckpt, map_location='cpu') if self.args.init_ckpt else {}
 
-        self.self_fusion = self.args.upstream1 == self.args.upstream2 or self.args.upstream2 is None
-        if self.self_fusion:
-            print(f'[Runner] - Use self fusion , upstream: {self.args.upstream1}')
-        else:
-            print(f'[Runner] - Use cross fusion , upstream1: {self.args.upstream1}, upstream2: {self.args.upstream2}')
         self.upstream1, self.upstream2 = self._get_upstream()
         self.ifeaturizer1, self.ifeaturizer2 = self._get_featurizer()
         self.fusioner = self._get_fusioner()
@@ -61,6 +57,17 @@ class Runner():
         if not self.self_fusion:
             self.all_entries.append(self.upstream2)
 
+    def __enter__(self):
+        self.cache1, self.cache2 = self._get_cache()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if hasattr(self, 'cache1') and self.cache1:
+            self.cache1.close()
+            del self.cache1
+        if hasattr(self, 'cache2') and self.cache2:
+            self.cache2.close()
+            del self.cache2
 
     def _load_weight(self, model, name):
         init_weight = self.init_ckpt.get(name)
@@ -84,6 +91,14 @@ class Runner():
 
 
     def _get_upstream(self):
+        if self.args.upstream2 is None:
+            self.args.upstream2 = self.args.upstream1
+        self.self_fusion = self.args.upstream1 == self.args.upstream2
+        if self.self_fusion:
+            print(f'[Runner] - Use self fusion , upstream: {self.args.upstream1}')
+        else:
+            print(f'[Runner] - Use cross fusion , upstream1: {self.args.upstream1}, upstream2: {self.args.upstream2}')
+
         upstream_refresh = self.args.upstream_refresh
 
         Upstream1 = getattr(hub, self.args.upstream1)
@@ -113,6 +128,10 @@ class Runner():
         if is_initialized() and get_rank() == 0:
             torch.distributed.barrier()
 
+        if self.args.upstream_trainable1:
+            print(f"[Runner] - Upstream1 is trainable")
+        else:
+            print(f"[Runner] - Upstream1 is not trainable")
         model1 = self._init_model(
             model = model1,
             name = 'Upstream1',
@@ -120,17 +139,31 @@ class Runner():
             interfaces = ["get_downsample_rates"]
         )
 
-        model2 = self._init_model(
-            model = model2,
-            name = 'Upstream2',
-            trainable = self.args.upstream_trainable2,
-            interfaces = ["get_downsample_rates"]
-        ) if not self.self_fusion else None
+        if not self.self_fusion:
+            if self.args.upstream_trainable2:
+                print(f"[Runner] - Upstream2 is trainable")
+            else:
+                print(f"[Runner] - Upstream2 is not trainable")
+            model2 = self._init_model(
+                model = model2,
+                name = 'Upstream2',
+                trainable = self.args.upstream_trainable2,
+                interfaces = ["get_downsample_rates"]
+            )
+        else:
+            model2 = model1
 
         return model1, model2
 
 
     def _get_featurizer(self):
+        if self.args.upstream1_feature_selection == 'hidden_states' \
+            and self.args.upstream1_layer_selection is not None:
+            print(f"[Runner] - iFeaturizer1 is not trainable")
+            trainable1 = False
+        else:
+            print(f"[Runner] - iFeaturizer1 is trainable")
+            trainable1 = True
         ifeaturizer1 = Featurizer(
             upstream = self.upstream1.model,
             feature_selection = self.args.upstream1_feature_selection,
@@ -139,6 +172,13 @@ class Runner():
             normalize = self.args.upstream_feature_normalize,
         ).to(self.args.device)
 
+        if self.args.upstream2_feature_selection == 'hidden_states' \
+            and self.args.upstream2_layer_selection is not None:
+            print(f"[Runner] - iFeaturizer2 is not trainable")
+            trainable2 = False
+        else:
+            print(f"[Runner] - iFeaturizer2 is trainable")
+            trainable2 = True
         ifeaturizer2 = Featurizer(
             upstream = self.upstream1.model if self.self_fusion else self.upstream2.model,
             feature_selection = self.args.upstream2_feature_selection,
@@ -150,20 +190,42 @@ class Runner():
         return self._init_model(
             model = ifeaturizer1,
             name = 'iFeaturizer1',
-            trainable = True,
+            trainable = trainable1,
             interfaces = ['output_dim', 'downsample_rate', 'get_feature_lens']
         ), self._init_model(
             model = ifeaturizer2,
             name = 'iFeaturizer2',
-            trainable = True,
+            trainable = trainable2,
             interfaces = ['output_dim', 'downsample_rate', 'get_feature_lens']
         )
 
+
+    def _get_cache(self):
+        libri_root = self.config['downstream_expert']['datarc']['libri_root']
+        dataset_name = self.config['downstream_expert']['datarc']['train']
+
+        assert os.path.exists(libri_root), f"libri_root {libri_root} does not exist"
+        assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
+        dataset_name = dataset_name[0]
+
+        upstream1_name = self.args.upstream1
+        layer1 = str(self.args.upstream1_layer_selection)
+        process_func1 = partial(self.process_wavs, self.upstream1, self.ifeaturizer1)
+        cache1_path = Path(libri_root)/"cache"/upstream1_name/dataset_name/f"{layer1}.h5"
+        use_cache1 = not self.upstream1.trainable and not self.ifeaturizer1.trainable and self.args.use_cache
+        cache1 = CacheModule(process_func1, cache1_path, self.args.device, use_cache1)
+
+        upstream2_name = self.args.upstream2
+        layer2 = str(self.args.upstream2_layer_selection)
+        process_func2 = partial(self.process_wavs, self.upstream2, self.ifeaturizer2)
+        cache2_path = Path(libri_root)/"cache"/upstream2_name/dataset_name/f"{layer2}.h5"
+        use_cache2 = not self.upstream2.trainable and not self.ifeaturizer2.trainable and self.args.use_cache
+        cache2 = CacheModule(process_func2, cache2_path, self.args.device, use_cache2)
+
+        return cache1, cache2
+
+
     def _get_fusioner(self):
-
-        assert self.ifeaturizer1.model.output_dim == self.ifeaturizer2.model.output_dim
-        assert self.ifeaturizer1.model.downsample_rate == self.ifeaturizer2.model.downsample_rate
-
         Fusioner = eval(self.args.fusioner)
         fusioner = Fusioner(
             self.ifeaturizer1.model,
@@ -175,7 +237,7 @@ class Runner():
         return self._init_model(
             model = fusioner,
             name = 'Fusioner',
-            trainable = True,
+            trainable = fusioner.trainable,
             interfaces = ['upstream_dim', 'downsample_rate']
         )
 
@@ -217,6 +279,45 @@ class Runner():
         )
         self._load_weight(scheduler, 'Scheduler')
         return scheduler
+
+    def with_cache(self, func):
+        @wraps(func)
+        def wrapper(wavpath: str):
+            wavname = Path(wavpath).stem
+            have_cached1 = self.cache1.use_cache and self.cache1.have_cached(wavname)
+            have_cached2 = self.cache2.use_cache and self.cache2.have_cached(wavname)
+            if not have_cached1 or not have_cached2:
+                wav = func(wavpath)
+            feat_wav1 = self.cache1._load_cache(wavname) if have_cached1 else wav
+            feat_wav2 = self.cache2._load_cache(wavname) if have_cached2 else wav
+            return feat_wav1, feat_wav2
+        return wrapper
+
+
+    def wrap_dataset(self, split: str):
+        if not hasattr(self.downstream.model, f"{split}_dataset"):
+            self.downstream.model.get_dataloader(split) # create dataset
+        split_dataset = getattr(self.downstream.model, f"{split}_dataset")
+        if not hasattr(split_dataset, "_have_wrap_cache"):
+            split_dataset._load_wav = self.with_cache(split_dataset._load_wav)
+            setattr(split_dataset, "_have_wrap_cache", True)
+
+
+    def process_wavs(self, upstream, featurizer, wavs: List[Tensor]) -> List[Tensor]:
+        if upstream.trainable and self.training:
+            features = upstream.model(wavs)
+        else:
+            with torch.no_grad():
+                features = upstream.model(wavs)
+
+        if (upstream.trainable or featurizer.trainable) \
+            and self.training:
+            features = featurizer.model(wavs, features)
+        else:
+            with torch.no_grad():
+                features = featurizer.model(wavs, features)
+
+        return features
 
 
     def train(self):
@@ -261,6 +362,10 @@ class Runner():
         records = defaultdict(list)
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
+
+        # wrap dataset
+        self.wrap_dataset(train_split)
+
         while pbar.n < pbar.total:
             try:
                 dataloader = self.downstream.model.get_dataloader(train_split, epoch=epoch)
@@ -272,35 +377,27 @@ class Runner():
                 else:
                     raise
 
-            for batch_id, (wavs, *others) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc='train', file=tqdm_file)):
+            for batch_id, (wavs, labels, wavnames) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc='train', file=tqdm_file)):
                 # try/except block for forward/backward
                 try:
                     if pbar.n >= pbar.total:
                         break
                     global_step = pbar.n + 1
 
-                    wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
-                    if self.upstream1.trainable:
-                        features1 = self.upstream1.model(wavs)
-                        features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
-                    else:
-                        with torch.no_grad():
-                            features1 = self.upstream1.model(wavs)
-                            features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
+                    wavs1, wavs2 = zip(*wavs)
 
-                    features1 = self.ifeaturizer1.model(features1)
-                    features2 = self.ifeaturizer2.model(features2)
+                    self.training = True
+                    features1 = self.cache1.get_features(wavs1, wavnames)
+                    features2 = self.cache2.get_features(wavs2, wavnames)
 
-                    feature_lens = self.ifeaturizer1.model.get_feature_lens(wavs) 
-
-                    features = self.fusioner.model(features1, features2, feature_lens)
+                    features = self.fusioner.model(features1, features2)
 
                     if specaug:
                         features, _ = specaug(features)
 
                     loss = self.downstream.model(
                         train_split,
-                        features, *others,
+                        features, labels, wavnames,
                         records = records,
                     )
                     batch_ids.append(batch_id)
@@ -436,6 +533,9 @@ class Runner():
             trainings.append(entry.model.training)
             entry.model.eval().to(self.args.device)
 
+        # wrap dataset
+        self.wrap_dataset(split)
+
         # prepare data
         dataloader = self.downstream.model.get_dataloader(split)
         evaluate_ratio = float(self.config["runner"].get("evaluate_ratio", 1))
@@ -443,21 +543,20 @@ class Runner():
 
         batch_ids = []
         records = defaultdict(list)
-        for batch_id, (wavs, *others) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc=split, total=evaluate_steps)):
+        for batch_id, (wavs, labels, wavnames) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc=split, total=evaluate_steps)):
             if batch_id > evaluate_steps:
                 break
 
-            wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
+            wavs1, wavs2 = zip(*wavs)
+
+            self.training = False
             with torch.no_grad():
-                features1 = self.upstream1.model(wavs)
-                features2 = features1 if self.self_fusion else self.upstream2.model(wavs)
-                features1 = self.ifeaturizer1.model(features1)
-                features2 = self.ifeaturizer2.model(features2)
-                feature_lens = self.ifeaturizer1.model.get_feature_lens(wavs) 
-                features = self.fusioner.model(features1, features2, feature_lens)
+                features1 = self.cache1.get_features(wavs1, wavnames, save=False)
+                features2 = self.cache2.get_features(wavs2, wavnames, save=False)
+                features = self.fusioner.model(features1, features2)
                 self.downstream.model(
                     split,
-                    features, *others,
+                    features, labels, wavnames,
                     records = records,
                     batch_id = batch_id,
                 )

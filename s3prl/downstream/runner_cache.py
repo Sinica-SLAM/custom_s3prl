@@ -23,7 +23,7 @@ from torch.distributed import is_initialized, get_rank, get_world_size
 from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
-from s3prl.upstream.interfaces import Featurizer
+from s3prl.upstream.featurizer import Featurizer
 from s3prl.downstream.cache import CacheModule
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
@@ -213,12 +213,8 @@ class RunnerCache():
         dataset_name = dataset_name[0]
 
         cache_path = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
-        self.use_cache = not self.upstream.trainable and not self.featurizer.trainable and self.args.use_cache
-        if self.use_cache:
-            print(f"[Runner] - Use cache at {cache_path}")
-        else:
-            print(f"[Runner] - Do not use cache")
-        return CacheModule(self.process_wavs, cache_path, self.args.device, use_cache=self.use_cache)
+        use_cache = not self.upstream.trainable and not self.featurizer.trainable and self.args.use_cache
+        return CacheModule(self.process_wavs, cache_path, self.args.device, use_cache=use_cache)
 
 
     def _get_downstream(self):
@@ -353,7 +349,7 @@ class RunnerCache():
                     global_step = pbar.n + 1
 
                     self.training = True
-                    features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
+                    features = self.cache.get_features(wavs, wavnames)
 
                     if specaug:
                         features, _ = specaug(features)
@@ -513,7 +509,7 @@ class RunnerCache():
                 break
 
             self.training = False
-            features, labels, wavnames = self.cache.get_features(wavs, labels, wavnames)
+            features = self.cache.get_features(wavs, wavnames)
 
             with torch.no_grad():
                 self.downstream.model(
@@ -578,7 +574,7 @@ class RunnerCache():
             organization = os.environ.get("HF_USERNAME")
         huggingface_token = HfFolder.get_token()
         print(f"[Runner] - Organisation to push fine-tuned model to: {organization}")
-        
+
         # Extract upstream repository metadata
         if self.args.hub == "huggingface":
             model_info = HfApi().model_info(self.args.upstream, token=huggingface_token)

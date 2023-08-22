@@ -41,7 +41,7 @@ downstream_expert:
     train: ['hakka2-train']
     dev: ['hakka2-dev']
     test: ['hakka2-test']
-    num_workers: 16
+    num_workers: 8
     train_batch_size: 16
     batch_size: 16
     eval_batch_size: 1

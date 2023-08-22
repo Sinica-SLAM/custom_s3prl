@@ -201,24 +201,24 @@ class RunnerFusion():
 
 
     def _get_cache(self):
-        libri_root = self.config['downstream_expert']['datarc']['libri_root']
+        kaldi_root = self.config['downstream_expert']['datarc']['kaldi_root']
         dataset_name = self.config['downstream_expert']['datarc']['train']
 
-        assert os.path.exists(libri_root), f"libri_root {libri_root} does not exist"
+        assert os.path.exists(kaldi_root), f"kaldi_root {kaldi_root} does not exist"
         assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
         dataset_name = dataset_name[0]
 
         upstream1_name = self.args.upstream1
         layer1 = str(self.args.upstream1_layer_selection)
         process_func1 = partial(self.process_wavs, self.upstream1, self.ifeaturizer1)
-        cache1_path = Path(libri_root)/"cache"/upstream1_name/dataset_name/f"{layer1}.h5"
+        cache1_path = Path(kaldi_root)/"cache"/upstream1_name/dataset_name/f"{layer1}.h5"
         use_cache1 = not self.upstream1.trainable and not self.ifeaturizer1.trainable and self.args.use_cache
         cache1 = CacheModule(process_func1, cache1_path, self.args.device, use_cache1)
 
         upstream2_name = self.args.upstream2
         layer2 = str(self.args.upstream2_layer_selection)
         process_func2 = partial(self.process_wavs, self.upstream2, self.ifeaturizer2)
-        cache2_path = Path(libri_root)/"cache"/upstream2_name/dataset_name/f"{layer2}.h5"
+        cache2_path = Path(kaldi_root)/"cache"/upstream2_name/dataset_name/f"{layer2}.h5"
         use_cache2 = not self.upstream2.trainable and not self.ifeaturizer2.trainable and self.args.use_cache
         cache2 = CacheModule(process_func2, cache2_path, self.args.device, use_cache2)
 

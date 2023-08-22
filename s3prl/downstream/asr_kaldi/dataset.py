@@ -111,7 +111,7 @@ class SequenceDataset(Dataset):
     def _load_wav(self, wav_path):
         wav, sr = torchaudio.load(os.path.join(self.kaldi_root, wav_path))
         assert sr == self.sample_rate, f'Sample rate mismatch: real {sr}, config {self.sample_rate}'
-        return wav.view(-1)
+        return wav.view(-1).numpy()
 
     def _load_transcript(self, table):
         """Load the transcripts for Librispeech"""
@@ -154,7 +154,7 @@ class SequenceDataset(Dataset):
 
     def __getitem__(self, index):
         # Load acoustic feature and pad
-        wav_batch = [self._load_wav(x_file).numpy() for x_file in self.X[index]]
+        wav_batch = [self._load_wav(x_file) for x_file in self.X[index]]
         label_batch = [self.Y[self._parse_x_name(x_file)].numpy() for x_file in self.X[index]]
         filename_batch = [Path(x_file).stem for x_file in self.X[index]]
         return wav_batch, label_batch, filename_batch # bucketing, return ((wavs, labels))

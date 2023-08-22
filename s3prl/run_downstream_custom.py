@@ -11,6 +11,7 @@ from argparse import Namespace
 from torch.distributed import is_initialized, get_world_size
 
 from s3prl import hub
+from s3prl.downstream.runner_cache import RunnerCache
 from s3prl.downstream.runner_fusion import RunnerFusion
 from s3prl.utility.helper import backup, get_time_tag, hack_isinstance, is_leader_process, override
 
@@ -53,21 +54,27 @@ def get_downstream_args():
         help='The model Hub used to retrieve the upstream model.')
 
     upstreams = [attr for attr in dir(hub) if attr[0] != '_']
-    parser.add_argument('-u1', '--upstream1',  help=""
+    parser.add_argument('-u', '--upstream',  help=""
         'Upstreams with \"_local\" or \"_url\" postfix need local ckpt (-k) or config file (-g). '
         'Other upstreams download two files on-the-fly and cache them, so just -u is enough and -k/-g are not needed. '
         'Please check upstream/README.md for details. '
         f"Available options in S3PRL: {upstreams}. "
     )
-    parser.add_argument('-u2', '--upstream2',  help="same as upstream1")
+    parser.add_argument('-u1', '--upstream1',  help="same as upstream")
+    parser.add_argument('-u2', '--upstream2',  help="same as upstream")
 
+    parser.add_argument('-k', '--upstream_ckpt', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='Only set when the specified upstream need it')
+    parser.add_argument('-g', '--upstream_model_config', help='The config file for constructing the pretrained model')
     parser.add_argument('-k1', '--upstream_ckpt1', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='Only set when the specified upstream need it')
     parser.add_argument('-k2', '--upstream_ckpt2', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='same as upstream_ckpt1')
     parser.add_argument('-r', '--upstream_refresh', action='store_true', help='Re-download cached ckpts for on-the-fly upstream variants')
+    parser.add_argument('-f', '--upstream_trainable', action='store_true', help='Fine-tune, set upstream.train(). Default is upstream.eval()')
     parser.add_argument('-f1', '--upstream_trainable1', action='store_true', help='Fine-tune, set upstream.train(). Default is upstream.eval()')
     parser.add_argument('-f2', '--upstream_trainable2', action='store_true', help='same as upstream_trainable')
+    parser.add_argument('-s', '--upstream_feature_selection', default='hidden_states', help='Specify the layer to be extracted as the representation')
     parser.add_argument('-s1', '--upstream1_feature_selection', default='hidden_states', help='Specify the layer to be extracted as the representation')
     parser.add_argument('-s2', '--upstream2_feature_selection', default='hidden_states', help='same as upstream_feature_selection1')
+    parser.add_argument('-l', '--upstream_layer_selection', type=int, help='Select a specific layer for the features selected by -s')
     parser.add_argument('-l1', '--upstream1_layer_selection', type=int, help='Select a specific layer for the features selected by -s1')
     parser.add_argument('-l2', '--upstream2_layer_selection', type=int, help='same as upstream1_layer_selection')
     parser.add_argument('-fs','--fusioner', help='Specify the fusion method for the two upstreams')
@@ -127,7 +134,7 @@ def get_downstream_args():
         cannot_overwrite_args = [
             'mode', 'evaluate_split', 'override',
             'backend', 'local_rank', 'past_exp',
-            'device'
+            'device', 'use_cache'
         ]
         args = update_args(args, ckpt['Args'], preserve_list=cannot_overwrite_args)
         os.makedirs(args.expdir, exist_ok=True)
@@ -204,7 +211,19 @@ def main():
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    with RunnerFusion(args, config) as runner:
+    if args.upstream is not None:
+        assert args.upstream1 is None and args.upstream2 is None, \
+            "Cannot specify both upstream and upstream1/upstream2"
+        assert args.upstream1_layer_selection is None and args.upstream2_layer_selection is None, \
+            "Cannot specify both upstream1_layer_selection and upstream2_layer_selection"
+        assert args.fusioner is None, "Cannot specify fusioner when only one upstream is used"
+        Runner = RunnerCache
+    else:
+        assert args.upstream1 is not None, "Must specify at least one upstream"
+        assert args.fusioner is not None, "Must specify fusioner when two upstreams are used"
+        Runner = RunnerFusion
+
+    with Runner(args, config) as runner:
         eval(f'runner.{args.mode}')()
 
 

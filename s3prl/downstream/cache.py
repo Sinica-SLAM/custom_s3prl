@@ -31,7 +31,7 @@ class CacheModule:
             assert len(self.sep) == 1, f'seq must be a single character, got {self.sep}'
 
             self.cache_writer = h5.File(self.cache_path, 'a')
-            self.cache_reader = h5.File(self.cache_path, 'r', swmr=True)
+            self.cache_reader = self.cache_writer
             self.pool = mp.Pool(self.num_worker)
             self.saving_features = None
 
@@ -105,7 +105,7 @@ class CacheModule:
         uncached_features = []
         if uncached_datas:
             uncached_wavs, uncached_names = zip(*uncached_datas)
-            uncached_wavs = [self._to_tensor(w) for w in uncached_wavs]
+            uncached_wavs = [self._to_tensor(w, non_blocking=True) for w in uncached_wavs]
 
         # move cached features to device
         cached_features = []

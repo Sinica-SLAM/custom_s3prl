@@ -551,8 +551,8 @@ class RunnerFusion():
 
             self.training = False
             with torch.no_grad():
-                features1 = self.cache1.get_features(wavs1, wavnames)
-                features2 = self.cache2.get_features(wavs2, wavnames)
+                features1 = self.cache1.get_features(wavs1, wavnames, save=False)
+                features2 = self.cache2.get_features(wavs2, wavnames, save=False)
                 features = self.fusioner.model(features1, features2)
                 self.downstream.model(
                     split,

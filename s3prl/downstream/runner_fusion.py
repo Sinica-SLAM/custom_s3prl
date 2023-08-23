@@ -280,8 +280,8 @@ class RunnerFusion():
             feature2 = self.cache2_manager.use_cache and self.cache2_manager._load_cache(wavname)
             if feature1 is None or feature2 is None:
                 wav = func(wavpath)
-            feature1 = wav if not isinstance(feature1, np.ndarray) else feature1
-            feature2 = wav if not isinstance(feature2, np.ndarray) else feature2
+            feature1 = wav if not isinstance(feature1, list) else feature1
+            feature2 = wav if not isinstance(feature2, list) else feature2
             return feature1, feature2
         return wrapper
 

@@ -23,7 +23,7 @@ from torch.distributed import is_initialized, get_rank, get_world_size
 from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
-from s3prl.upstream.featurizer import Featurizer
+from s3prl.upstream.featurizer import AutoSelect as Featurizer
 from s3prl.downstream.cache import CacheManager
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
@@ -455,6 +455,9 @@ class RunnerCache():
 
                     pbar.update(1)
                 epoch += 1
+
+                if hasattr(self.featurizer.model, "step"):
+                    self.featurizer.model.step()
 
         pbar.close()
 

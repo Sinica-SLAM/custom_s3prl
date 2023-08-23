@@ -152,3 +152,35 @@ class Featurizer(nn.Module):
 
         f_lens = self.get_feature_lens(paired_wavs)
         return tolist(f_lens, features)
+
+class AutoSelect(Featurizer):
+    def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
+        super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
+        self.name = "AutoSelect"
+        self.temp = nn.Parameter(torch.ones(1), requires_grad=False)
+
+        self._weighted_sum = self._auto_select
+
+        print(f"[{self.name}] - Using temperature {self.temp.item():.3f}")
+
+    def _auto_select(self, feature):
+        stacked_feature = torch.stack(feature, dim=0)
+
+        if self.normalize:
+            stacked_feature = F.layer_norm(
+                stacked_feature, (stacked_feature.shape[-1],)
+            )
+
+        _, *origin_shape = stacked_feature.shape
+        stacked_feature = stacked_feature.view(self.layer_num, -1)
+        norm_weights = F.softmax(self.weights / self.temp, dim=-1)
+        weighted_feature = (norm_weights.unsqueeze(-1) * stacked_feature).sum(dim=0)
+        weighted_feature = weighted_feature.view(*origin_shape)
+
+        return weighted_feature
+
+    def step(self):
+        with torch.no_grad():
+            self.temp.add_(-0.003)
+            self.temp.clamp_(0.001, 1)
+        print(f"[{self.name}] - Using temperature {self.temp.item():.3f}")

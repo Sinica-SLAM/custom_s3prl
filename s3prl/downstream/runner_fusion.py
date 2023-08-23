@@ -199,19 +199,23 @@ class RunnerFusion():
         assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
         dataset_name = dataset_name[0]
 
+        if not hasattr(self.downstream.model, f"train_dataset"):
+            self.downstream.model.get_dataloader("train") # create dataset
+        train_dataset = self.downstream.model.train_dataset
+
         upstream1_name = self.args.upstream1
         layer1 = str(self.args.upstream1_layer_selection)
         process_func1 = partial(self.process_wavs, self.upstream1, self.ifeaturizer1)
         cache1_path = Path(libri_root)/"cache"/upstream1_name/dataset_name/f"{layer1}.h5"
         use_cache1 = not self.upstream1.trainable and not self.ifeaturizer1.trainable and self.args.use_cache
-        cache1_manager = CacheManager(process_func1, self.args.device, cache1_path, use_cache1)
+        cache1_manager = CacheManager(train_dataset, self.args, self.config, process_func1, self.with_cache, use_cache1, cache1_path)
 
         upstream2_name = self.args.upstream2
         layer2 = str(self.args.upstream2_layer_selection)
         process_func2 = partial(self.process_wavs, self.upstream2, self.ifeaturizer2)
         cache2_path = Path(libri_root)/"cache"/upstream2_name/dataset_name/f"{layer2}.h5"
         use_cache2 = not self.upstream2.trainable and not self.ifeaturizer2.trainable and self.args.use_cache
-        cache2_manager = CacheManager(process_func2, self.args.device, cache2_path, use_cache2)
+        cache2_manager = CacheManager(train_dataset, self.args, self.config, process_func2, self.with_cache, use_cache2, cache2_path)
 
         return cache1_manager, cache2_manager
 
@@ -285,15 +289,6 @@ class RunnerFusion():
             return feature1, feature2
         return wrapper
 
-    def wrap_dataset(self, split: str):
-        if not hasattr(self.downstream.model, f"{split}_dataset"):
-            self.downstream.model.get_dataloader(split) # create dataset
-        split_dataset = getattr(self.downstream.model, f"{split}_dataset")
-        if not hasattr(split_dataset, "_have_wrap_cache"):
-            split_dataset._load_wav = self.with_cache(split_dataset._load_wav)
-            setattr(split_dataset, "_have_wrap_cache", True)
-
-
     def process_wavs(self, upstream, featurizer, wavs: List[Tensor]) -> List[Tensor]:
         if upstream.trainable:
             features = upstream.model(wavs)
@@ -352,9 +347,6 @@ class RunnerFusion():
         records = defaultdict(list)
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
-
-        # wrap dataset
-        self.wrap_dataset(train_split)
 
         with self.cache1_manager as cache1_manager, self.cache2_manager as cache2_manager:
             while pbar.n < pbar.total:

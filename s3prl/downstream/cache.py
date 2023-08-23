@@ -29,25 +29,43 @@ WAIT_FOR_SAVE = 64
 
 class CacheManager:
     def __init__(self,
+                 dataset,
+                 args,
+                 config,
                  process_func: Callable,
-                 device: str,
-                 cache_path: Optional[str] = None,
+                 overwrite_loader: Optional[Callable] = None,
                  use_cache: bool = True,
-                 num_worker: int = None):
+                 cache_path: Optional[str] = None):
+        self.dataset = dataset
+        self.args = args
+        self.config = config
         self.process_func = process_func
-        self.cache_path = Path(cache_path or f'data/cache/{process_func.__name__}.h5')
-        self.device = device
+        self.overwrite_loader = overwrite_loader
         self.use_cache = use_cache
-        self.num_worker = num_worker or min(8, os.cpu_count())
+        self.cache_path = cache_path
 
     def __enter__(self):
         if self.use_cache:
+            if self.cache_path is None:
+                libri_root = self.config['downstream_expert']['datarc']['libri_root']
+                upstream_name = self.args.upstream
+                dataset_name = self.config['downstream_expert']['datarc']['train'][0]
+                layer = str(self.args.upstream_layer_selection)
+                self.cache_path = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-            self.cache_writer = h5.File(self.cache_path, 'a')
+            self.cache_writer = h5.File(self.cache_path, 'a', libver='latest')
             self.cache_reader = self.cache_writer
-            self.pool = mp.Pool(self.num_worker)
+            self.pool = mp.Pool(1)
             self.saving_features = []
+
+            if not hasattr(self.dataset, '_have_wrapped_loader'):
+                self.original_loader = self.dataset._load_wav
+                if self.overwrite_loader is not None:
+                    self.dataset._load_wav = self.overwrite_loader
+                else:
+                    self.dataset._load_wav = self.with_cache(self.dataset._load_wav)
+                self.dataset._have_wrapped_loader = True
 
             print(f"[CacheModule] - Use cache at {self.cache_path}")
         else:
@@ -67,10 +85,15 @@ class CacheManager:
             for saving_feature in self.saving_features:
                 saving_feature.get()
             del self.saving_features
+        if hasattr(self, 'original_loader') and self.original_loader:
+            self.dataset._load_wav = self.original_loader
+            if hasattr(self.dataset, '_have_wrapped_loader'):
+                del self.dataset._have_wrapped_loader
 
     def _parse_cache_path(self, wavname):
         return wavname
 
+    @timeit(1)
     def _save_cache(self, wavname, feature):
         np_feature = feature.cpu().numpy()
         feature_path = self._parse_cache_path(wavname)
@@ -85,6 +108,7 @@ class CacheManager:
         for wavname, feature in zip(wavnames, features):
             self.saving_features.append(self.pool.apply_async(self._save_cache, (wavname, feature)))
 
+    @timeit(1)
     def _load_cache(self, wavname):
         cache_path = self._parse_cache_path(wavname)
         if (feature := self.cache_reader.get(cache_path)) is not None:
@@ -98,7 +122,7 @@ class CacheManager:
             wavname = Path(wavpath).stem
             feature = self._load_cache(wavname)
             return func(wavpath) if feature is None else feature
-        return wrapper if self.use_cache else func
+        return wrapper
 
     def get_features(self, wavs: List[Tensor], wavnames: List[str], save=True) -> List[Tensor]:
         cached_states = [wav.ndim != 1 for wav in wavs]

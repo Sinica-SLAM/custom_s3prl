@@ -197,18 +197,11 @@ class RunnerCache():
         )
 
     def _get_cache(self):
-        libri_root = self.config['downstream_expert']['datarc']['libri_root']
-        upstream_name = self.args.upstream
-        dataset_name = self.config['downstream_expert']['datarc']['train']
-        layer = str(self.args.upstream_layer_selection)
-
-        assert os.path.exists(libri_root), f"libri_root {libri_root} does not exist"
-        assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
-        dataset_name = dataset_name[0]
-
-        cache_path = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
+        if not hasattr(self.downstream.model, f"train_dataset"):
+            self.downstream.model.get_dataloader("train") # create dataset
+        train_dataset = self.downstream.model.train_dataset
         use_cache = not self.upstream.trainable and not self.featurizer.trainable and self.args.use_cache
-        return CacheManager(self.process_wavs, self.args.device, cache_path, use_cache=use_cache)
+        return CacheManager(train_dataset, self.args, self.config, self.process_wavs, use_cache=use_cache)
 
 
     def _get_downstream(self):
@@ -253,14 +246,6 @@ class RunnerCache():
         model_card = MODEL_CARD_MARKDOWN.format(upstream_model=self.args.upstream)
         with open(os.path.join(path, "README.md"), "w") as f:
             f.write(model_card)
-
-    def wrap_dataset(self, split: str):
-        if not hasattr(self.downstream.model, f"{split}_dataset"):
-            self.downstream.model.get_dataloader(split) # create dataset
-        split_dataset = getattr(self.downstream.model, f"{split}_dataset")
-        if not hasattr(split_dataset, "_have_wrap_cache"):
-            split_dataset._load_wav = self.cache_manager.with_cache(split_dataset._load_wav)
-            setattr(split_dataset, "_have_wrap_cache", True)
 
     def process_wavs(self, wavs: List[Tensor]) -> List[Tensor]:
         if self.upstream.trainable:
@@ -319,9 +304,6 @@ class RunnerCache():
         records = defaultdict(list)
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
-
-        # wrap dataset
-        self.wrap_dataset(train_split)
 
         with self.cache_manager as cache:
             while pbar.n < pbar.total:

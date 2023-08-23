@@ -278,7 +278,7 @@ class RunnerFusion():
             wavname = Path(wavpath).stem
             feature1 = self.cache1_manager.use_cache and self.cache1_manager._load_cache(wavname)
             feature2 = self.cache2_manager.use_cache and self.cache2_manager._load_cache(wavname)
-            if feature1 is None or feature2 is None:
+            if not isinstance(feature1, list) or not isinstance(feature2, list):
                 wav = func(wavpath)
             feature1 = wav if not isinstance(feature1, list) else feature1
             feature2 = wav if not isinstance(feature2, list) else feature2

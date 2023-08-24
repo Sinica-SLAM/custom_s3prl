@@ -5,6 +5,7 @@ from functools import wraps
 import multiprocessing.dummy as mp
 from pathlib import Path
 import h5py as h5
+import random
 
 import torch
 from torch import Tensor
@@ -20,7 +21,7 @@ def timeit(tolerance=0.1):
             end = timer()
             duration = end - start
             if duration > tolerance:
-                print(f'\n[{func.__name__}] - {duration:.2f}s!!')
+                print(f'[{func.__name__}] - {duration:.2f}s!!')
             return result
         return wrapper
     return decorator
@@ -33,19 +34,33 @@ class CacheManager:
                  args,
                  config,
                  process_func: Callable,
-                 overwrite_loader: Optional[Callable] = None,
+                 load_wrapper: Optional[Callable] = None,
                  use_cache: bool = True,
                  cache_path: Optional[str] = None):
         self.dataset = dataset
         self.args = args
         self.config = config
         self.process_func = process_func
-        self.overwrite_loader = overwrite_loader
+        self.load_wrapper = load_wrapper or self.with_cache
         self.use_cache = use_cache
+        self.cache_in_ram = args.cache_ram_ratio is not None
         self.cache_path = cache_path
 
     def __enter__(self):
-        if self.use_cache:
+        if not self.use_cache:
+            print(f"[CacheModule] - Don't use cache")
+            return self
+
+        self.cache_ram = {}
+        self.cache_reader = None
+        self.saving_features = []
+        self.pool = mp.Pool(min(8, os.cpu_count()))
+
+        if self.cache_in_ram:
+            self.cache_ratio = self.args.cache_ram_ratio
+            print(f"[CacheModule] - Use cache in RAM with ratio {self.cache_ratio:.2f}")
+
+        if not self.cache_in_ram or self.cache_ratio < 1:
             if self.cache_path is None:
                 libri_root = self.config['downstream_expert']['datarc']['libri_root']
                 upstream_name = self.args.upstream
@@ -56,21 +71,16 @@ class CacheManager:
 
             self.cache_writer = h5.File(self.cache_path, 'a', libver='latest')
             self.cache_reader = self.cache_writer
-            self.pool = mp.Pool(1)
-            self.saving_features = []
-
-            if not hasattr(self.dataset, '_have_wrapped_loader'):
-                self.original_loader = self.dataset._load_wav
-                if self.overwrite_loader is not None:
-                    self.dataset._load_wav = self.overwrite_loader
-                else:
-                    self.dataset._load_wav = self.with_cache(self.dataset._load_wav)
-                self.dataset._have_wrapped_loader = True
-
             print(f"[CacheModule] - Use cache at {self.cache_path}")
-        else:
-            print(f"[CacheModule] - Don't use cache")
+
+
+        if not hasattr(self.dataset, '_have_wrapped_loader'):
+            self.original_loader = self.dataset._load_wav
+            self.dataset._load_wav = self.load_wrapper(self.original_loader)
+            self.dataset._have_wrapped_loader = True
+
         return self
+
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if hasattr(self, 'pool') and self.pool:
@@ -91,14 +101,21 @@ class CacheManager:
                 del self.dataset._have_wrapped_loader
 
     def _parse_cache_path(self, wavname):
-        return wavname
+        return 'c' + wavname.replace('-', '_')
 
-    @timeit(1)
+    def _save_ram_cache_casually(self, cache_path, np_feature):
+        if cache_path not in self.cache_ram:
+            self.cache_ram[cache_path] = np_feature if random.random() < self.cache_ratio else None
+
+    @timeit(3)
     def _save_cache(self, wavname, feature):
         np_feature = feature.cpu().numpy()
         feature_path = self._parse_cache_path(wavname)
         try:
-            self.cache_writer.create_dataset(feature_path, data=np_feature, compression='lzf', shuffle=True)
+            if self.cache_in_ram:
+                self._save_ram_cache_casually(feature_path, np_feature)
+            else:
+                self.cache_writer.create_dataset(feature_path, data=np_feature, compression='lzf', shuffle=True)
         except RuntimeError:
             print(f'Failed to save {feature_path}')
 
@@ -111,10 +128,24 @@ class CacheManager:
     @timeit(1)
     def _load_cache(self, wavname):
         cache_path = self._parse_cache_path(wavname)
-        if (feature := self.cache_reader.get(cache_path)) is not None:
-            return feature[:]
-        else:
+
+        np_feature = self.cache_ram.get(cache_path)
+        if np_feature is not None:
+            return np_feature
+
+        if self.cache_reader is None:
             return None
+
+        np_feature = self.cache_reader.get(cache_path)
+        if np_feature is None:
+            return None
+
+        np_feature = np_feature[:]
+        if self.cache_in_ram:
+            self._save_ram_cache_casually(cache_path, np_feature)
+
+        return np_feature
+
 
     def with_cache(self, func):
         @wraps(func)
@@ -137,7 +168,7 @@ class CacheManager:
                 uncached_names.append(wavname)
 
         if not self.use_cache:
-            assert len(cached_features) == 0, "cached data is not empty when not using cache"
+            assert len(cached_features) == 0, "cached data is not empty when not using cache, something wrong"
 
         # process uncached data
         uncached_features = self.process_func(uncached_wavs) if uncached_wavs else []

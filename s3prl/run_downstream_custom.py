@@ -80,6 +80,7 @@ def get_downstream_args():
     parser.add_argument('-fs','--fusioner', help='Specify the fusion method for the two upstreams')
     parser.add_argument('--upstream_feature_normalize', action='store_true', help='Specify whether to normalize hidden features before weighted sum')
     parser.add_argument('-C', '--use_cache', action='store_true', help='Cache upstream features on disk to speed up experiments')
+    parser.add_argument('-M', '--cache_ram_ratio', type=float, help='Ratio of RAM to use for caching upstream features')
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream

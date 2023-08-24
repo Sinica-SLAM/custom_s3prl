@@ -206,16 +206,16 @@ class RunnerFusion():
         upstream1_name = self.args.upstream1
         layer1 = str(self.args.upstream1_layer_selection)
         process_func1 = partial(self.process_wavs, self.upstream1, self.ifeaturizer1)
-        cache1_path = Path(libri_root)/"cache"/upstream1_name/dataset_name/f"{layer1}.h5"
+        cache1_dir = Path(libri_root)/"cache"/upstream1_name/dataset_name/layer1
         use_cache1 = not self.upstream1.trainable and not self.ifeaturizer1.trainable and self.args.use_cache
-        cache1_manager = CacheManager(train_dataset, self.args, self.config, process_func1, self.with_cache, use_cache1, cache1_path)
+        cache1_manager = CacheManager(train_dataset, self.args, self.config, process_func1, self.with_cache, use_cache1, cache1_dir)
 
         upstream2_name = self.args.upstream2
         layer2 = str(self.args.upstream2_layer_selection)
         process_func2 = partial(self.process_wavs, self.upstream2, self.ifeaturizer2)
-        cache2_path = Path(libri_root)/"cache"/upstream2_name/dataset_name/f"{layer2}.h5"
+        cache2_dir = Path(libri_root)/"cache"/upstream2_name/dataset_name/layer2
         use_cache2 = not self.upstream2.trainable and not self.ifeaturizer2.trainable and self.args.use_cache
-        cache2_manager = CacheManager(train_dataset, self.args, self.config, process_func2, self.with_cache, use_cache2, cache2_path)
+        cache2_manager = CacheManager(train_dataset, self.args, self.config, process_func2, self.with_cache, use_cache2, cache2_dir)
 
         return cache1_manager, cache2_manager
 
@@ -378,9 +378,13 @@ class RunnerFusion():
                         features1 = cache1_manager.get_features(wavs1, wavnames)
                         features2 = cache2_manager.get_features(wavs2, wavnames)
 
-                        for f1, w1, f2, w2 in zip(features1, wavs1, features2, wavs2):
+                        for i, (f1, f2) in enumerate(zip(features1, features2)):
                             if f1.shape != f2.shape:
-                                print(f'[Runner] - feature1.shape: {f1.shape}, feature2.shape: {f2.shape}')
+                                print(f'[Runner] - Warning: feature1.shape: {f1.shape}, feature2.shape: {f2.shape} unmatch!!')
+                                f_len_min = min(f1.size(0), f2.size(0))
+                                features1[i] = f1.narrow(0, 0, f_len_min)
+                                features2[i] = f2.narrow(0, 0, f_len_min)
+
 
                         features = self.fusioner.model(features1, features2)
 

@@ -4,7 +4,6 @@ from typing import List, Tuple, Callable, Any, Optional
 from functools import wraps
 import multiprocessing.dummy as mp
 from pathlib import Path
-import h5py as h5
 import random
 
 import torch
@@ -36,7 +35,7 @@ class CacheManager:
                  process_func: Callable,
                  load_wrapper: Optional[Callable] = None,
                  use_cache: bool = True,
-                 cache_path: Optional[str] = None):
+                 cache_dir: Optional[str] = None):
         self.dataset = dataset
         self.args = args
         self.config = config
@@ -44,7 +43,7 @@ class CacheManager:
         self.load_wrapper = load_wrapper or self.with_cache
         self.use_cache = use_cache
         self.cache_in_ram = args.cache_ram_ratio is not None
-        self.cache_path = cache_path
+        self.cache_dir = cache_dir
 
     def __enter__(self):
         if not self.use_cache:
@@ -61,17 +60,15 @@ class CacheManager:
             print(f"[CacheModule] - Use cache in RAM with ratio {self.cache_ratio:.2f}")
 
         if not self.cache_in_ram or self.cache_ratio < 1:
-            if self.cache_path is None:
+            if self.cache_dir is None:
                 libri_root = self.config['downstream_expert']['datarc']['libri_root']
                 upstream_name = self.args.upstream
                 dataset_name = self.config['downstream_expert']['datarc']['train'][0]
                 layer = str(self.args.upstream_layer_selection)
-                self.cache_path = Path(libri_root)/"cache"/upstream_name/dataset_name/f"{layer}.h5"
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+                self.cache_dir = Path(libri_root)/"cache"/upstream_name/dataset_name/layer
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-            self.cache_writer = h5.File(self.cache_path, 'a', libver='latest')
-            self.cache_reader = self.cache_writer
-            print(f"[CacheModule] - Use cache at {self.cache_path}")
+            print(f"[CacheModule] - Use cache at {self.cache_dir}")
 
 
         if not hasattr(self.dataset, '_have_wrapped_loader'):
@@ -83,18 +80,14 @@ class CacheManager:
 
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if hasattr(self, 'pool') and self.pool:
-            self.pool.close()
-            self.pool.join()
-            del self.pool
-        if hasattr(self, 'cache_writer') and self.cache_writer:
-            self.cache_writer.close()
-            del self.cache_writer
-            del self.cache_reader
         if hasattr(self, 'saving_features') and self.saving_features:
             for saving_feature in self.saving_features:
                 saving_feature.get()
             del self.saving_features
+        if hasattr(self, 'pool') and self.pool:
+            self.pool.close()
+            self.pool.join()
+            del self.pool
         if hasattr(self, 'original_loader') and self.original_loader:
             self.dataset._load_wav = self.original_loader
             if hasattr(self.dataset, '_have_wrapped_loader'):
@@ -118,7 +111,7 @@ class CacheManager:
         feature_path = self._parse_cache_path(wavname)
         try:
             if not self.cache_in_ram or not self._save_ram_cache_casually(feature_path, np_feature):
-                self.cache_writer.create_dataset(feature_path, data=np_feature, compression='lzf', shuffle=True)
+                np.save(self.cache_dir/feature_path, np_feature)
         except RuntimeError:
             print(f'Failed to save {feature_path}')
 
@@ -136,15 +129,10 @@ class CacheManager:
         if np_feature is not None:
             return np_feature
 
-        if self.cache_reader is None:
-            return None
+        if os.path.exists(self.cache_dir/cache_path):
+            np_feature = np.load(self.cache_dir/cache_path)
 
-        np_feature = self.cache_reader.get(cache_path)
-        if np_feature is None:
-            return None
-
-        np_feature = np_feature[:]
-        if self.cache_in_ram:
+        if np_feature is not None and self.cache_in_ram:
             self._save_ram_cache_casually(cache_path, np_feature)
 
         return np_feature

@@ -111,7 +111,9 @@ class CacheManager:
         feature_path = self._parse_cache_path(wavname)
         try:
             if not self.cache_in_ram or not self._save_ram_cache_casually(feature_path, np_feature):
-                np.save(self.cache_dir/feature_path, np_feature)
+                feature_path = self.cache_dir/feature_path
+                feature_path.parent.mkdir(parents=True, exist_ok=True)
+                np.save(feature_path, np_feature)
         except RuntimeError:
             print(f'Failed to save {feature_path}')
 

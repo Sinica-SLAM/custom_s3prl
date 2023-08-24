@@ -25,6 +25,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--ckpt', type=str, help='This has to be a ckpt not a directory.', required=True)
 parser.add_argument('--name', type=str, default='', required=False)
 parser.add_argument('--out_dir', type=str, default='', required=False)
+parser.add_argument('-s', '--scale', type=float, default=1.0, required=False)
 args = parser.parse_args()
 
 assert os.path.isfile(args.ckpt), 'This has to be a ckpt file and not a directory.'
@@ -38,8 +39,8 @@ else:
 ckpt = torch.load(args.ckpt, map_location='cpu')
 weights = ckpt.get('Featurizer').get('weights')
 temp = ckpt.get('Featurizer').get('temp') or 1.0
-norm_weights = F.softmax(weights/temp, dim=-1).cpu().double().tolist()
-print('Normalized weights: ', norm_weights)
+norm_weights = F.softmax(args.scale * weights/temp, dim=-1).cpu().double().tolist()
+print('Normalized weights: \n', norm_weights)
 
 # plot weights
 x = range(1, len(norm_weights)+1)

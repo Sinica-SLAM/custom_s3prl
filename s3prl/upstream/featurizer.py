@@ -158,7 +158,7 @@ class AutoSelect(Featurizer):
     def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
         super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
         self.name = "AutoSelect"
-        self.temp = nn.parameter.Parameter(torch.tensor(1.0))
+        self.temp = nn.parameter.Parameter(torch.tensor(1.0), requires_grad=False)
 
         self._weighted_sum = self._auto_select
 

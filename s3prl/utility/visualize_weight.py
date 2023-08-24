@@ -37,7 +37,8 @@ else:
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
 weights = ckpt.get('Featurizer').get('weights')
-norm_weights = F.softmax(weights, dim=-1).cpu().double().tolist()
+temp = ckpt.get('Featurizer').get('temp') or 1.0
+norm_weights = F.softmax(weights/temp, dim=-1).cpu().double().tolist()
 print('Normalized weights: ', norm_weights)
 
 # plot weights

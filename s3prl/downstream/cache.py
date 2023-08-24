@@ -94,7 +94,7 @@ class CacheManager:
                 del self.dataset._have_wrapped_loader
 
     def _parse_cache_path(self, wavname):
-        return 'c' + wavname.replace('-', '_')
+        return wavname.replace('-', '/')
 
     def _save_ram_cache_casually(self, cache_path, np_feature):
         if cache_path not in self.cache_ram:

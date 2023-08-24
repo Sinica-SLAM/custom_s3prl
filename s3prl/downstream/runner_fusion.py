@@ -378,6 +378,10 @@ class RunnerFusion():
                         features1 = cache1_manager.get_features(wavs1, wavnames)
                         features2 = cache2_manager.get_features(wavs2, wavnames)
 
+                        for f1, w1, f2, w2 in zip(features1, wavs1, features2, wavs2):
+                            if f1.shape != f2.shape:
+                                print(f'[Runner] - feature1.shape: {f1.shape}, feature2.shape: {f2.shape}')
+
                         features = self.fusioner.model(features1, features2)
 
                         if specaug:

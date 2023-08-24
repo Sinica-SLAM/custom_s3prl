@@ -106,23 +106,6 @@ class Featurizer(nn.Module):
         return feature
 
     def _weighted_sum(self, feature):
-        assert self.layer_num == len(feature), (
-            "If you run into this error, there is a great chance"
-            " you are finetuning the upstream with wav2vec2's transformer blocks"
-            " in weighted-sum mode (default), including wav2vec2, hubert, and decoar2."
-            " These models use the layerdrop technique which causes the different number"
-            " of layer forwards between different model forwards, resulting in different"
-            " number of hidden states for different model forwards. Hence, finetuning"
-            " these upstreams is essentially incompatible with weight-sum mode unless"
-            " you turn off the layerdrop option in fairseq. See:"
-            " https://github.com/pytorch/fairseq/blob/f6abcc2a67328bee8b15c596bb626ce2d720aae6/fairseq/models/wav2vec/wav2vec2.py#L857"
-            " However, since finetuning upstreams will backward the gradient through all layers"
-            " which serves the same functionality as weighted-sum: all layers can be used for different"
-            " downstream tasks. Hence instead of finetuning upstream with weighted-sum, we suggest to"
-            " follow the more common setting: finetuning upstream with the last layer. Please use the"
-            " following options: --upstream_trainable --upstream_feature_selection last_hidden_state."
-            " Or: -f -s last_hidden_state"
-        )
         stacked_feature = torch.stack(feature, dim=0)
 
         if self.normalize:
@@ -139,7 +122,10 @@ class Featurizer(nn.Module):
         return weighted_feature
 
     def get_feature_lens(self, wavs: List[Tensor]) -> List[int]:
-        return [round(len(wav) / self.downsample_rate) for wav in wavs]
+        def get_feature_len(wav: Tensor) -> int:
+            # the length is the integer smaller but closest to the ratio, even if exact division
+            return -(-(len(wav)) // self.downsample_rate) - 1
+        return [get_feature_len(wav) for wav in wavs]
 
     def forward(
         self,

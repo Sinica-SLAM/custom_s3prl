@@ -105,16 +105,19 @@ class CacheManager:
 
     def _save_ram_cache_casually(self, cache_path, np_feature):
         if cache_path not in self.cache_ram:
-            self.cache_ram[cache_path] = np_feature if random.random() < self.cache_ratio else None
+            if random.random() < self.cache_ratio:
+                self.cache_ram[cache_path] = np_feature
+                return True
+            else:
+                self.cache_ram[cache_path] = None
+                return False
 
     @timeit(3)
     def _save_cache(self, wavname, feature):
         np_feature = feature.cpu().numpy()
         feature_path = self._parse_cache_path(wavname)
         try:
-            if self.cache_in_ram:
-                self._save_ram_cache_casually(feature_path, np_feature)
-            else:
+            if not self.cache_in_ram or not self._save_ram_cache_casually(feature_path, np_feature):
                 self.cache_writer.create_dataset(feature_path, data=np_feature, compression='lzf', shuffle=True)
         except RuntimeError:
             print(f'Failed to save {feature_path}')

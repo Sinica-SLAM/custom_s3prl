@@ -159,6 +159,7 @@ class AutoSelect(Featurizer):
         super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
         self.name = "AutoSelect"
         self.temp = nn.parameter.Parameter(torch.tensor(1.0), requires_grad=False)
+        self.step_count = 0
 
         self._weighted_sum = self._auto_select
 
@@ -185,7 +186,9 @@ class AutoSelect(Featurizer):
         return weighted_feature
 
     def step(self):
+        self.step_count += 1
         with torch.no_grad():
             self.temp.mul_(0.9993)
             self.temp.clamp_(min=0.001, max=1.0)
-        self.show()
+        if self.step_count % 100 == 0:
+            self.show()

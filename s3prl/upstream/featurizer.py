@@ -177,7 +177,8 @@ class AutoSelect(Featurizer):
 
         _, *origin_shape = stacked_feature.shape
         stacked_feature = stacked_feature.view(self.layer_num, -1)
-        norm_weights = gumbel_softmax(self.weights, tau=self.temp, hard=True, dim=-1)
+        log_probs = F.log_softmax(self.weights/self.temp, dim=-1)
+        norm_weights = gumbel_softmax(log_probs, hard=True, dim=-1)
         weighted_feature = (norm_weights.unsqueeze(-1) * stacked_feature).sum(dim=0)
         weighted_feature = weighted_feature.view(*origin_shape)
 
@@ -185,6 +186,6 @@ class AutoSelect(Featurizer):
 
     def step(self):
         with torch.no_grad():
-            self.temp.add_(-0.003)
+            self.temp.mul_(0.9993)
             self.temp.clamp_(min=0.001, max=1.0)
         self.show()

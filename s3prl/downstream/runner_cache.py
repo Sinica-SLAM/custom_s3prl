@@ -386,6 +386,8 @@ class RunnerCache():
                         print(f'[Runner] - grad norm is NaN at step {global_step}')
                     else:
                         optimizer.step()
+                        if hasattr(self.featurizer.model, "step"):
+                            self.featurizer.model.step()
                     optimizer.zero_grad()
 
                     # adjust learning rate
@@ -455,9 +457,6 @@ class RunnerCache():
 
                     pbar.update(1)
                 epoch += 1
-
-                if hasattr(self.featurizer.model, "step"):
-                    self.featurizer.model.step()
 
         pbar.close()
 

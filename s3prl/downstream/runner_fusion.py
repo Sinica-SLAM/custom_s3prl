@@ -428,6 +428,10 @@ class RunnerFusion():
                         print(f'[Runner] - grad norm is NaN at step {global_step}')
                     else:
                         optimizer.step()
+                        if hasattr(self.ifeaturizer1.model, "step"):
+                            self.ifeaturizer1.model.step()
+                        if hasattr(self.ifeaturizer2.model, "step"):
+                            self.ifeaturizer2.model.step()
                     optimizer.zero_grad()
 
                     # adjust learning rate

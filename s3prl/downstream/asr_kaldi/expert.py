@@ -351,7 +351,18 @@ class DownstreamExpert(nn.Module):
             self.best_score = torch.ones(1) * wer
             save_names.append(f'{split}-best.ckpt')
 
-        if 'test' in split or 'dev' in split:
+            lm = "noLM" if self.decoder is None else "LM"
+            hyp_ark = open(os.path.join(self.expdir, f'{split}-{lm}-hyp.ark'), 'w')
+            ref_ark = open(os.path.join(self.expdir, f'{split}-{lm}-ref.ark'), 'w')
+            for filename, hyp, ref in zip(records['filenames'], records['pred_words'], records['target_words']):
+                hyp = ' '.join(hyp)
+                ref = ' '.join(ref)
+                hyp_ark.write(f'{filename} {hyp}\n')
+                ref_ark.write(f'{filename} {ref}\n')
+            hyp_ark.close()
+            ref_ark.close()
+
+        if 'test' in split:
             lm = "noLM" if self.decoder is None else "LM"
             hyp_ark = open(os.path.join(self.expdir, f'{split}-{lm}-hyp.ark'), 'w')
             ref_ark = open(os.path.join(self.expdir, f'{split}-{lm}-ref.ark'), 'w')

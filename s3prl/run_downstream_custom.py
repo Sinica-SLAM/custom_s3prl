@@ -217,14 +217,13 @@ def main():
         assert args.upstream1_layer_selection is None and args.upstream2_layer_selection is None, \
             "Cannot specify both upstream1_layer_selection and upstream2_layer_selection"
         assert args.fusioner is None, "Cannot specify fusioner when only one upstream is used"
-        Runner = RunnerCache
+        runner = RunnerCache(args, config)
     else:
         assert args.upstream1 is not None, "Must specify at least one upstream"
         assert args.fusioner is not None, "Must specify fusioner when two upstreams are used"
-        Runner = RunnerFusion
+        runner = RunnerFusion(args, config)
 
-    with Runner(args, config) as runner:
-        eval(f'runner.{args.mode}')()
+    eval(f'runner.{args.mode}')()
 
 
 if __name__ == '__main__':

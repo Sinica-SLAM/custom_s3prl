@@ -22,7 +22,7 @@ from torch.distributed import is_initialized, get_rank, get_world_size
 from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
-from s3prl.upstream.featurizer import Featurizer
+from s3prl.upstream.featurizer import *
 from s3prl.downstream.cache import CacheManager
 from s3prl.upstream.fusioner import *
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
@@ -155,7 +155,8 @@ class RunnerFusion():
         else:
             print(f"[Runner] - iFeaturizer1 is trainable")
             trainable1 = True
-        ifeaturizer1 = Featurizer(
+        InnerFeaturizer1 = eval(self.args.ifeaturizer1)
+        ifeaturizer1 = InnerFeaturizer1(
             upstream = self.upstream1.model,
             feature_selection = self.args.upstream1_feature_selection,
             layer_selection = self.args.upstream1_layer_selection,
@@ -170,7 +171,8 @@ class RunnerFusion():
         else:
             print(f"[Runner] - iFeaturizer2 is trainable")
             trainable2 = True
-        ifeaturizer2 = Featurizer(
+        InnerFeaturizer2 = eval(self.args.ifeaturizer2)
+        ifeaturizer2 = InnerFeaturizer2(
             upstream = self.upstream1.model if self.self_fusion else self.upstream2.model,
             feature_selection = self.args.upstream2_feature_selection,
             layer_selection = self.args.upstream2_layer_selection,

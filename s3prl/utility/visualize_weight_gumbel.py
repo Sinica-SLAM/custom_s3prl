@@ -25,6 +25,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--ckpt', type=str, help='This has to be a ckpt not a directory.', required=True)
 parser.add_argument('--name', type=str, default='', required=False)
 parser.add_argument('--out_dir', type=str, default='', required=False)
+parser.add_argument('-s', '--scale', type=float, default=1.0, required=False)
 args = parser.parse_args()
 
 assert os.path.isfile(args.ckpt), 'This has to be a ckpt file and not a directory.'
@@ -36,14 +37,22 @@ else:
     os.mkdir(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-weights = ckpt.get('Featurizer').get('weights')
-norm_weights = F.softmax(weights, dim=-1).cpu().double().tolist()
+weights = ckpt.get('Featurizer').get('weights') * args.scale
+temp = ckpt.get('Featurizer').get('temp') or 1.0
+log_probs = F.log_softmax(weights/temp, dim=-1)
+probs = log_probs.exp()
+norm_weights = F.gumbel_softmax(log_probs, hard=True)
+weights = weights.cpu().double().tolist()
+log_probs = log_probs.cpu().double().tolist()
+probs = probs.cpu().double().tolist()
+norm_weights = norm_weights.cpu().double().tolist()
 print('Weights: \n', weights)
+print('Probs: \n', probs)
 print('Normalized weights: \n', norm_weights)
 
 # plot weights
 x = range(1, len(norm_weights)+1)
-plt.bar(x, norm_weights, align='center')
+plt.bar(x, probs, align='center')
 
 # set xticks and ylim
 plt.xticks(x, [str(i-1) for i in x])

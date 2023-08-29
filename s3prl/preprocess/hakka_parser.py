@@ -80,6 +80,8 @@ def hakka_parser(pinyin: str):
                 rf"({main_vowel_list})", vowels[1], maxsplit=1) # 2nd / 3rd vowel
             other_vowels = list(filter(lambda x: x != '', other_vowels))
             result = [head_vowel] + other_vowels + [result[-1]]
+    if('iii' in pinyin):
+        return ["<UNK>"]
     if(len(result)>0):
         return result
     return ["<UNK>"]

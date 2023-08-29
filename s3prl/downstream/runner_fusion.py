@@ -377,6 +377,7 @@ class RunnerFusion():
                             wavs1.append(wav1)
                             wavs2.append(wav2)
 
+
                         features1 = cache1_manager.get_features(wavs1, wavnames)
                         features2 = cache2_manager.get_features(wavs2, wavnames)
 

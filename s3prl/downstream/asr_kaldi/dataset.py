@@ -25,6 +25,7 @@ from torch.utils.data.dataset import Dataset
 import torchaudio
 #-------------#
 from .dictionary import Dictionary
+from s3prl.preprocess.hakka_parser import hakka_parse
 
 SAMPLE_RATE = 16000
 HALF_BATCHSIZE_TIME = 2000
@@ -115,10 +116,17 @@ class SequenceDataset(Dataset):
 
     def _load_transcript(self, table):
         """Load the transcripts for Librispeech"""
-        def process_trans(transcript):
+        def process_trans(transcript: str):
             #TODO: support character / bpe
             transcript = transcript.upper()
-            return " ".join(list(transcript.replace(" ", "|"))) + " |"
+            words = transcript.split()
+            char_roots = []
+            for word in words:
+                char_roots.extend(hakka_parse(word))
+            transcript = "|".join(char_roots)
+            print(transcript)
+            return " ".join(list(transcript)) + " |"
+            #return " ".join(list(transcript.replace(" ", "|"))) + " |"
 
         id_trsp_ls = []
         for meta_dir in table['meta_dir'].unique():

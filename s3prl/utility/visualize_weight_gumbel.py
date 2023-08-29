@@ -37,11 +37,14 @@ else:
     os.mkdir(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-weights = ckpt.get('Featurizer').get('weights') * args.scale
-temp = ckpt.get('Featurizer').get('temp') or 1.0
+print('ckpt: ', ckpt.keys())
+weights = ckpt['Featurizer']['weights'] * args.scale
+temp = ckpt['Featurizer'].get('temp') or 1.0
+print('temp: ', temp)
 log_probs = F.log_softmax(weights/temp, dim=-1)
 probs = log_probs.exp()
 norm_weights = F.gumbel_softmax(log_probs, hard=True)
+print('Normalized weights of upstream: \n', norm_weights)
 weights = weights.cpu().double().tolist()
 log_probs = log_probs.cpu().double().tolist()
 probs = probs.cpu().double().tolist()

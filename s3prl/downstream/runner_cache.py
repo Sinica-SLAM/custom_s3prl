@@ -269,11 +269,11 @@ class RunnerCache():
         trainable_paras = []
         for entry in self.all_entries:
             if entry.trainable:
-                entry.model.train()
+                entry.model.train().to(self.args.device)
                 trainable_models.append(entry.model)
                 trainable_paras += list(entry.model.parameters())
             else:
-                entry.model.eval()
+                entry.model.eval().to(self.args.device)
 
         # optimizer
         optimizer = self._get_optimizer(trainable_models)
@@ -470,7 +470,7 @@ class RunnerCache():
         trainings = []
         for entry in self.all_entries:
             trainings.append(entry.model.training)
-            entry.model.eval()
+            entry.model.eval().to(self.args.device)
 
         # prepare data
         dataloader = self.downstream.model.get_dataloader(split)
@@ -514,7 +514,7 @@ class RunnerCache():
 
         for entry, training in zip(self.all_entries, trainings):
             if training:
-                entry.model.train()
+                entry.model.train().to(self.args.device)
 
         if not_during_training:
             logger.close()
@@ -535,7 +535,7 @@ class RunnerCache():
         wavs = [wav.view(-1).to(self.args.device)]
 
         for entry in self.all_entries:
-            entry.model.eval()
+            entry.model.eval().to(self.args.device)
 
         with torch.no_grad():
             features = self.upstream.model(wavs)

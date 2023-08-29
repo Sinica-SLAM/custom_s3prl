@@ -40,12 +40,13 @@ else:
     os.mkdir(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
+print('ckpt: ', ckpt.keys())
 weights1 = ckpt['iFeaturizer1']['weights']
 weights2 = ckpt['iFeaturizer2']['weights']
 norm_weights1 = F.softmax(weights1, dim=-1).cpu().double()
 norm_weights2 = F.softmax(weights2, dim=-1).cpu().double()
-print('Normalized weights of wavlm+: \n', norm_weights1)
-print('Normalized weights of hubert: \n', norm_weights2)
+print('Normalized weights of upstream1: \n', norm_weights1)
+print('Normalized weights of upstream2: \n', norm_weights2)
 if fusioner := ckpt.get('Fusioner'):
     if lamb := fusioner.get('lamb'):
         true_lamb = torch.sigmoid(lamb).item()

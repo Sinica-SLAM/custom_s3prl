@@ -40,7 +40,7 @@ ckpt = torch.load(args.ckpt, map_location='cpu')
 print('ckpt: ', ckpt.keys())
 weights = ckpt['Featurizer']['weights'] * args.scale
 temp = ckpt['Featurizer'].get('temp') or 1.0
-print('temp: ', temp)
+print('Temperature: ', temp)
 log_probs = F.log_softmax(weights/temp, dim=-1)
 probs = log_probs.exp()
 norm_weights = F.gumbel_softmax(log_probs, hard=True)

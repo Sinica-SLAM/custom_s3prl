@@ -51,6 +51,7 @@ class CacheManager:
             self.original_loader = self.dataset._load_wav
             self.dataset._load_wav = self.load_wrapper(self.original_loader)
             self.dataset._have_wrapped_loader = True
+            print(f"[CacheModule] - Wrap loader with {self.load_wrapper.__name__}")
 
         if not self.use_cache:
             print(f"[CacheModule] - Don't use cache")
@@ -107,13 +108,14 @@ class CacheManager:
 
     @timeit(5)
     def _save_cache(self, wavname: str, feature: Tensor):
-        np_feature = feature.numpy(force=True)
+        np_feature = feature.cpu().numpy()
         feature_path = self._parse_cache_path(wavname)
         try:
-            if not self.cache_in_ram or not self._save_ram_cache_casually(feature_path, np_feature):
-                feature_path = self.cache_dir/feature_path
-                feature_path.parent.mkdir(parents=True, exist_ok=True)
-                np.save(feature_path, np_feature)
+            if self.cache_in_ram:
+                self._save_ram_cache_casually(feature_path, np_feature)
+            feature_path = self.cache_dir/feature_path
+            feature_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(feature_path, np_feature)
         except RuntimeError:
             print(f'Failed to save {feature_path}')
 

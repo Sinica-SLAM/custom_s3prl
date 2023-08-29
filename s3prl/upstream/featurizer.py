@@ -107,23 +107,6 @@ class Featurizer(nn.Module):
         return feature
 
     def _weighted_sum(self, feature):
-        assert self.layer_num == len(feature), (
-            "If you run into this error, there is a great chance"
-            " you are finetuning the upstream with wav2vec2's transformer blocks"
-            " in weighted-sum mode (default), including wav2vec2, hubert, and decoar2."
-            " These models use the layerdrop technique which causes the different number"
-            " of layer forwards between different model forwards, resulting in different"
-            " number of hidden states for different model forwards. Hence, finetuning"
-            " these upstreams is essentially incompatible with weight-sum mode unless"
-            " you turn off the layerdrop option in fairseq. See:"
-            " https://github.com/pytorch/fairseq/blob/f6abcc2a67328bee8b15c596bb626ce2d720aae6/fairseq/models/wav2vec/wav2vec2.py#L857"
-            " However, since finetuning upstreams will backward the gradient through all layers"
-            " which serves the same functionality as weighted-sum: all layers can be used for different"
-            " downstream tasks. Hence instead of finetuning upstream with weighted-sum, we suggest to"
-            " follow the more common setting: finetuning upstream with the last layer. Please use the"
-            " following options: --upstream_trainable --upstream_feature_selection last_hidden_state."
-            " Or: -f -s last_hidden_state"
-        )
         stacked_feature = torch.stack(feature, dim=0)
 
         if self.normalize:
@@ -140,7 +123,10 @@ class Featurizer(nn.Module):
         return weighted_feature
 
     def get_feature_lens(self, wavs: List[Tensor]) -> List[int]:
-        return [round(len(wav) / self.downsample_rate) for wav in wavs]
+        def get_feature_len(wav: Tensor) -> int:
+            # the length is the integer smaller but closest to the ratio, even if exact division
+            return -(-(len(wav)) // self.downsample_rate) - 1
+        return [get_feature_len(wav) for wav in wavs]
 
     def forward(
         self,
@@ -154,12 +140,14 @@ class Featurizer(nn.Module):
         f_lens = self.get_feature_lens(paired_wavs)
         return tolist(f_lens, features)
 
-class AutoSelect(Featurizer):
+class GumbelSoftmax(Featurizer):
     def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
         super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
-        self.name = "AutoSelect"
+        self.name = "GumbelSoftmax"
         self.temp = nn.parameter.Parameter(torch.tensor(1.0), requires_grad=False)
         self.step_count = 0
+
+        assert feature_selection == "hidden_states" and layer_selection is None, "GumbelSelect only support hidden_states feature selection and layer_selection is None"
 
         self._weighted_sum = self._auto_select
 
@@ -180,6 +168,46 @@ class AutoSelect(Featurizer):
         stacked_feature = stacked_feature.view(self.layer_num, -1)
         log_probs = F.log_softmax(self.weights/self.temp, dim=-1)
         norm_weights = gumbel_softmax(log_probs, hard=True, dim=-1)
+        weighted_feature = (norm_weights.unsqueeze(-1) * stacked_feature).sum(dim=0)
+        weighted_feature = weighted_feature.view(*origin_shape)
+
+        return weighted_feature
+
+    def step(self):
+        self.step_count += 1
+        with torch.no_grad():
+            self.temp.mul_(0.9993)
+            self.temp.clamp_(min=0.001, max=1.0)
+        if self.step_count % 100 == 0:
+            self.show()
+
+class AnnealSoftmax(Featurizer):
+    def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
+        super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
+        self.name = "AnnealSoftmax"
+        self.temp = nn.parameter.Parameter(torch.tensor(1.0), requires_grad=False)
+        self.step_count = 0
+
+        assert feature_selection == "hidden_states" and layer_selection is None, "AnnealSoftmax only support hidden_states feature selection and layer_selection is None"
+
+        self._weighted_sum = self._auto_select
+
+        self.show()
+
+    def show(self):
+        print(f"[{self.name}] - temp: {self.temp.item():.4f}")
+
+    def _auto_select(self, feature):
+        stacked_feature = torch.stack(feature, dim=0)
+
+        if self.normalize:
+            stacked_feature = F.layer_norm(
+                stacked_feature, (stacked_feature.shape[-1],)
+            )
+
+        _, *origin_shape = stacked_feature.shape
+        stacked_feature = stacked_feature.view(self.layer_num, -1)
+        norm_weights = F.softmax(self.weights/self.temp, dim=-1)
         weighted_feature = (norm_weights.unsqueeze(-1) * stacked_feature).sum(dim=0)
         weighted_feature = weighted_feature.view(*origin_shape)
 

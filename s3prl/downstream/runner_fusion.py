@@ -22,7 +22,7 @@ from torch.distributed import is_initialized, get_rank, get_world_size
 from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
-from s3prl.upstream.featurizer import Featurizer
+from s3prl.upstream.featurizer import *
 from s3prl.downstream.cache import CacheManager
 from s3prl.upstream.fusioner import *
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
@@ -155,7 +155,8 @@ class RunnerFusion():
         else:
             print(f"[Runner] - iFeaturizer1 is trainable")
             trainable1 = True
-        ifeaturizer1 = Featurizer(
+        InnerFeaturizer1 = eval(self.args.ifeaturizer1)
+        ifeaturizer1 = InnerFeaturizer1(
             upstream = self.upstream1.model,
             feature_selection = self.args.upstream1_feature_selection,
             layer_selection = self.args.upstream1_layer_selection,
@@ -170,7 +171,8 @@ class RunnerFusion():
         else:
             print(f"[Runner] - iFeaturizer2 is trainable")
             trainable2 = True
-        ifeaturizer2 = Featurizer(
+        InnerFeaturizer2 = eval(self.args.ifeaturizer2)
+        ifeaturizer2 = InnerFeaturizer2(
             upstream = self.upstream1.model if self.self_fusion else self.upstream2.model,
             feature_selection = self.args.upstream2_feature_selection,
             layer_selection = self.args.upstream2_layer_selection,
@@ -199,19 +201,23 @@ class RunnerFusion():
         assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
         dataset_name = dataset_name[0]
 
+        if not hasattr(self.downstream.model, f"train_dataset"):
+            self.downstream.model.get_dataloader("train") # create dataset
+        train_dataset = self.downstream.model.train_dataset
+
         upstream1_name = self.args.upstream1
         layer1 = str(self.args.upstream1_layer_selection)
         process_func1 = partial(self.process_wavs, self.upstream1, self.ifeaturizer1)
-        cache1_path = Path(kaldi_root)/"cache"/upstream1_name/dataset_name/f"{layer1}.h5"
+        cache1_dir = Path(kaldi_root)/"cache"/upstream1_name/dataset_name/layer1
         use_cache1 = not self.upstream1.trainable and not self.ifeaturizer1.trainable and self.args.use_cache
-        cache1_manager = CacheManager(process_func1, self.args.device, cache1_path, use_cache1)
+        cache1_manager = CacheManager(train_dataset, self.args, self.config, process_func1, self.with_cache, use_cache1, cache1_dir)
 
         upstream2_name = self.args.upstream2
         layer2 = str(self.args.upstream2_layer_selection)
         process_func2 = partial(self.process_wavs, self.upstream2, self.ifeaturizer2)
-        cache2_path = Path(kaldi_root)/"cache"/upstream2_name/dataset_name/f"{layer2}.h5"
+        cache2_dir = Path(kaldi_root)/"cache"/upstream2_name/dataset_name/layer2
         use_cache2 = not self.upstream2.trainable and not self.ifeaturizer2.trainable and self.args.use_cache
-        cache2_manager = CacheManager(process_func2, self.args.device, cache2_path, use_cache2)
+        cache2_manager = CacheManager(train_dataset, self.args, self.config, process_func2, self.with_cache, use_cache2, cache2_dir)
 
         return cache1_manager, cache2_manager
 
@@ -278,21 +284,12 @@ class RunnerFusion():
             wavname = Path(wavpath).stem
             feature1 = self.cache1_manager.use_cache and self.cache1_manager._load_cache(wavname)
             feature2 = self.cache2_manager.use_cache and self.cache2_manager._load_cache(wavname)
-            if feature1 is None or feature2 is None:
+            if not isinstance(feature1, np.ndarray) or not isinstance(feature2, np.ndarray):
                 wav = func(wavpath)
-            feature1 = wav if feature1 is None else feature1
-            feature2 = wav if feature2 is None else feature2
+            feature1 = wav if not isinstance(feature1, np.ndarray) else feature1
+            feature2 = wav if not isinstance(feature2, np.ndarray) else feature2
             return feature1, feature2
         return wrapper
-
-    def wrap_dataset(self, split: str):
-        if not hasattr(self.downstream.model, f"{split}_dataset"):
-            self.downstream.model.get_dataloader(split) # create dataset
-        split_dataset = getattr(self.downstream.model, f"{split}_dataset")
-        if not hasattr(split_dataset, "_have_wrap_cache"):
-            split_dataset._load_wav = self.with_cache(split_dataset._load_wav)
-            setattr(split_dataset, "_have_wrap_cache", True)
-
 
     def process_wavs(self, upstream, featurizer, wavs: List[Tensor]) -> List[Tensor]:
         if upstream.trainable:
@@ -353,9 +350,6 @@ class RunnerFusion():
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
 
-        # wrap dataset
-        self.wrap_dataset(train_split)
-
         with self.cache1_manager as cache1_manager, self.cache2_manager as cache2_manager:
             while pbar.n < pbar.total:
                 try:
@@ -385,6 +379,14 @@ class RunnerFusion():
 
                         features1 = cache1_manager.get_features(wavs1, wavnames)
                         features2 = cache2_manager.get_features(wavs2, wavnames)
+
+                        for i, (f1, f2) in enumerate(zip(features1, features2)):
+                            if f1.shape != f2.shape:
+                                print(f'[Runner] - Warning: feature1.shape: {f1.shape}, feature2.shape: {f2.shape} unmatch!!')
+                                f_len_min = min(f1.size(0), f2.size(0))
+                                features1[i] = f1.narrow(0, 0, f_len_min)
+                                features2[i] = f2.narrow(0, 0, f_len_min)
+
 
                         features = self.fusioner.model(features1, features2)
 

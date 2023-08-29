@@ -1,4 +1,5 @@
 import re
+from tqdm import tqdm
 revised_dict = {}
 initials_list = ['ng', 'zh', 'ch', 'sh', 'rh', 'b', 'p', 'm', 'f',
                  'v', 'd', 't', 'n', 'l', 'z', 'c', 's', 'j', 'q', 'x', 'g', 'k', 'h']
@@ -7,17 +8,18 @@ main_vowel_list = ['er', 'ii', 'a', 'e', 'i', 'o', 'u']
 end_vowel_list = ['ng', 'b', 'd', 'g', 'm', 'n', 'i', 'u']
 no_main_list = ['ng', 'm', 'n']
 accent_list = ['24', '11', '31', '55', '2', '5']
-initials_list = '|'.join(initials_list)
-head_vowel_list = '|'.join(head_vowel_list)
-main_vowel_list = '|'.join(main_vowel_list)
-end_vowel_list = '|'.join(end_vowel_list)
-accent_list = '|'.join(accent_list)
-no_main_list = '|'.join(no_main_list)
+initials_list = '|'.join(initials_list).upper()
+head_vowel_list = '|'.join(head_vowel_list).upper()
+main_vowel_list = '|'.join(main_vowel_list).upper()
+end_vowel_list = '|'.join(end_vowel_list).upper()
+accent_list = '|'.join(accent_list).upper()
+no_main_list = '|'.join(no_main_list).upper()
 
 
-def hakka_parser(pinyin: str):
+def hakka_parse(pinyin: str):
     global initials_list, head_vowel_list, main_vowel_list, end_vowel_list, accent_list
     result = []
+    pinyin = pinyin.upper()
     no_main_vowel = re.search(f'^(?:{no_main_list})(?:{accent_list})$', pinyin)
     one_vowel = re.search(
         f'^(?:{initials_list})?(?:{main_vowel_list})(?:{accent_list})$', pinyin)

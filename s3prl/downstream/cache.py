@@ -2,7 +2,7 @@ import os
 import numpy as np
 from typing import List, Tuple, Callable, Any, Optional
 from functools import wraps
-import multiprocessing.dummy as mp
+import multiprocessing as mp
 from pathlib import Path
 import random
 

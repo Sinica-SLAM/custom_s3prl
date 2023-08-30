@@ -176,8 +176,11 @@ class GumbelSoftmax(Featurizer):
     def step(self):
         self.step_count += 1
         with torch.no_grad():
-            self.temp.mul_(0.9993)
-            self.temp.clamp_(min=0.001, max=1.0)
+            if self.temp.item() > 0.1:
+                self.temp.add_(-0.000045)
+            else:
+                self.temp.mul_(0.99977)
+            self.temp.clamp_(min=0.0001, max=1.0)
         if self.step_count % 100 == 0:
             self.show()
 

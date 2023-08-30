@@ -124,7 +124,7 @@ class SequenceDataset(Dataset):
             for word in words:
                 char_roots.extend(hakka_parse(word))
             transcript = "|".join(char_roots)
-            print(transcript)
+            #print(transcript)
             return " ".join(list(transcript)) + " |"
             #return " ".join(list(transcript.replace(" ", "|"))) + " |"
 

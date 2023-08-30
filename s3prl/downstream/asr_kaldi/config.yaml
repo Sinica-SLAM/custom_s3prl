@@ -45,9 +45,9 @@ downstream_expert:
     train_batch_size: 16
     batch_size: 16
     eval_batch_size: 1
-    kaldi_root: '/mnt/md0/play_ground/data/HakkaRoot/HAC_corpus'
+    kaldi_root: '/mnt/md0/play_ground/data/HakkaRoot/HakkaCorpus'
     bucket_file: '/mnt/md0/play_ground/data/HakkaRoot/len_for_bucket'
-    dict_path: "/mnt/md0/user_wadeowatts17/custom_s3prl/s3prl/data/HAC_corpus/dict/ls/char_accent_ls.dict"
+    dict_path: "/mnt/md0/user_wadeowatts17/custom_s3prl/s3prl/downstream/asr_kaldi/root.dict"
 
     zero_infinity: True
 

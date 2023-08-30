@@ -59,7 +59,7 @@ plt.bar(x, probs, align='center')
 
 # set xticks and ylim
 plt.xticks(x, [str(i-1) for i in x])
-plt.ylim(0, 1)
+plt.ylim(0)
 
 # set names
 plt.title(f'Distribution of normalized weight - {args.name}')

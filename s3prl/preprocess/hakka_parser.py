@@ -14,10 +14,10 @@ main_vowel_list = '|'.join(main_vowel_list).upper()
 end_vowel_list = '|'.join(end_vowel_list).upper()
 accent_list = '|'.join(accent_list).upper()
 no_main_list = '|'.join(no_main_list).upper()
-
+multiletter_dict = {'ER':'<ER>', 'II':'<II>', 'NG':'<NG>', 'ZH':'<ZH>', 'CH':'<CH>', 'SH':'<SH>', 'RH':'<RH>', '24':'<24>', '11':'<11>', '31':'<31>', '55':'<55>'}
 
 def hakka_parse(pinyin: str):
-    global initials_list, head_vowel_list, main_vowel_list, end_vowel_list, accent_list
+    global initials_list, head_vowel_list, main_vowel_list, end_vowel_list, accent_list, multiletter_dict
     result = []
     pinyin = pinyin.upper()
     no_main_vowel = re.search(f'^(?:{no_main_list})(?:{accent_list})$', pinyin)
@@ -82,8 +82,9 @@ def hakka_parse(pinyin: str):
                 rf"({main_vowel_list})", vowels[1], maxsplit=1) # 2nd / 3rd vowel
             other_vowels = list(filter(lambda x: x != '', other_vowels))
             result = [head_vowel] + other_vowels + [result[-1]]
-    if('iii' in pinyin):
+    if('iii' in pinyin or len(result) == 0):
         return ["<UNK>"]
-    if(len(result)>0):
-        return result
-    return ["<UNK>"]
+    for i in range(len(result)):
+        if(result[i] in multiletter_dict):
+            result[i] = multiletter_dict[result[i]]
+    return result

@@ -41,30 +41,40 @@ else:
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
 print('ckpt: ', ckpt.keys())
-weights1 = ckpt['iFeaturizer1']['weights']
-weights2 = ckpt['iFeaturizer2']['weights']
-norm_weights1 = F.softmax(weights1, dim=-1).cpu().double()
-norm_weights2 = F.softmax(weights2, dim=-1).cpu().double()
-print('Normalized weights of upstream1: \n', norm_weights1)
-print('Normalized weights of upstream2: \n', norm_weights2)
+
+norm_weights1 = None
+norm_weights2 = None
+if ifeaturizer1 := ckpt.get('iFeaturizer1'):
+    weights1 = ifeaturizer1['weights']
+    norm_weights1 = F.softmax(weights1, dim=-1).cpu().double()
+    print('Normalized weights of upstream1: \n', norm_weights1)
+if ifeaturizer2 := ckpt.get('iFeaturizer2'):
+    weights2 = ifeaturizer2['weights']
+    norm_weights2 = F.softmax(weights2, dim=-1).cpu().double()
+    print('Normalized weights of upstream2: \n', norm_weights2)
+
 if fusioner := ckpt.get('Fusioner'):
     if lamb := fusioner.get('lamb'):
         true_lamb = torch.sigmoid(lamb).item()
         print('Lambda: ', true_lamb)
-        norm_weights1 *= true_lamb
-        norm_weights2 *= (1-true_lamb)
-norm_weights1 = norm_weights1.tolist()
-norm_weights2 = norm_weights2.tolist()
+        if norm_weights1 is not None:
+            norm_weights1 *= true_lamb
+        if norm_weights2 is not None:
+            norm_weights2 *= (1-true_lamb)
+norm_weights1 = norm_weights1.tolist() if norm_weights1 is not None else None
+norm_weights2 = norm_weights2.tolist() if norm_weights2 is not None else None
 
 
 upstream1 = args.upstream1
 upstream2 = args.upstream2
 # plot weights
-x = range(1, len(norm_weights1)+1)
-plt.bar(x, norm_weights1, 0.3, align='edge', color='deepskyblue')
-plt.bar(x, norm_weights2, -0.3, align='edge', color='orange')
+x = range(0, len(norm_weights1 or norm_weights2))
+if norm_weights1 is not None:
+    plt.bar(x, norm_weights1, 0.3, align='edge', color='deepskyblue')
+if norm_weights2 is not None:
+    plt.bar(x, norm_weights2, -0.3, align='edge', color='orange')
 # set xticks and ylim
-plt.xticks(x, [str(i-1) for i in x])
+plt.xticks(x, x)
 # plt.ylim(0, 0.4)
 # set names
 plt.title(f'Distribution of normalized weight - {args.name}')

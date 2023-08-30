@@ -122,10 +122,10 @@ class SequenceDataset(Dataset):
             words = transcript.split()
             char_roots = []
             for word in words:
-                char_roots.extend(hakka_parse(word))
-            transcript = "|".join(char_roots)
-            print(transcript)
-            return " ".join(list(transcript)) + " |"
+                char_roots.extend(hakka_parse(word).append('|'))
+            transcript = " ".join(char_roots)
+            #print(transcript)
+            return transcript
             #return " ".join(list(transcript.replace(" ", "|"))) + " |"
 
         id_trsp_ls = []

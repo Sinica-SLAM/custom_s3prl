@@ -2,7 +2,7 @@ import os
 import numpy as np
 from typing import List, Tuple, Callable, Any, Optional
 from functools import wraps
-import multiprocessing as mp
+import multiprocessing.dummy as mp
 from pathlib import Path
 import random
 
@@ -108,7 +108,7 @@ class CacheManager:
 
     @timeit(5)
     def _save_cache(self, wavname: str, feature: Tensor):
-        np_feature = feature.cpu().numpy()
+        np_feature = feature.numpy(force=True)
         feature_path = self._parse_cache_path(wavname)
         try:
             if self.cache_in_ram:
@@ -118,10 +118,14 @@ class CacheManager:
             np.save(feature_path, np_feature)
         except RuntimeError:
             print(f'Failed to save {feature_path}')
+        return None
 
     def async_save_caches(self, wavnames: List[str], features: List[Tensor]):
+        if len(self.saving_features) > WAIT_FOR_SAVE:
+            self.saving_features = [f for f in self.saving_features if not f.ready() or f.get()]
         while len(self.saving_features) > WAIT_FOR_SAVE:
             self.saving_features.pop(0).get()
+            
         for wavname, feature in zip(wavnames, features):
             self.saving_features.append(self.pool.apply_async(self._save_cache, (wavname, feature)))
 

@@ -217,6 +217,6 @@ class AnnealSoftmax(Featurizer):
         self.step_count += 1
         with torch.no_grad():
             self.temp.mul_(0.9993)
-            self.temp.clamp_(min=0.001, max=1.0)
+            self.temp.clamp_(min=0.0001, max=0.0001)
         if self.step_count % 100 == 0:
             self.show()

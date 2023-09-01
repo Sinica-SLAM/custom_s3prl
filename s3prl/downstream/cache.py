@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from typing import List, Tuple, Callable, Any, Optional
+from typing import List, Tuple, Callable, Any, Optional, Dict
 from functools import wraps
 import multiprocessing.dummy as mp
 from pathlib import Path
@@ -25,7 +25,7 @@ def timeit(tolerance=0.1):
         return wrapper
     return decorator
 
-WAIT_FOR_SAVE = 64
+WAIT_FOR_SAVE = 128
 
 class CacheManager:
     def __init__(self,
@@ -43,8 +43,12 @@ class CacheManager:
         self.load_wrapper = load_wrapper or self.with_cache
         self.use_cache = use_cache
         self.cache_in_ram = args.cache_ram_ratio is not None and self.use_cache
-        self.cache_in_disk = args.cache_ram_ratio != 1 and self.use_cache
+        self.cache_in_disk = self.use_cache
         self.cache_dir = cache_dir or self._get_default_cache_dir()
+
+        if self.cache_in_ram:
+            assert self.config['downstream_expert']['datarc']['num_workers'] <= 1, \
+                "num_workers must not greater than 2 when cache in ram"
 
     def __enter__(self):
         if not hasattr(self.dataset, '_have_wrapped_loader'):
@@ -57,18 +61,16 @@ class CacheManager:
             print(f"[CacheModule] - Don't use cache")
             return self
 
-        self.cache_ram = {}
-        self.cache_reader = None
         self.saving_features = []
-        self.pool = mp.Pool(min(8, os.cpu_count()), initializer=random.seed)
+        self.pool = mp.Pool(min(4, os.cpu_count()), initializer=random.seed, initargs=(os.getpid(),))
 
         if self.cache_in_ram:
             self.cache_ratio = self.args.cache_ram_ratio
+            self.cache_ram: Dict[str, np.ndarray] = {}
             print(f"[CacheModule] - Use cache in RAM with ratio {self.cache_ratio:.2f}")
 
         if self.cache_in_disk:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-
             print(f"[CacheModule] - Use cache at {self.cache_dir}")
 
         return self
@@ -95,70 +97,90 @@ class CacheManager:
             layer = str(self.args.upstream_layer_selection)
             return Path(libri_root)/"cache"/upstream_name/dataset_name/layer
 
-    def _parse_cache_path(self, wavname: str):
+    def _parse_cache_name(self, wavname: str):
         return wavname.replace('-', '/')
 
-    def _save_ram_cache_casually(self, cache_path: str, np_feature: np.ndarray):
-        if cache_path not in self.cache_ram:
+    def check_in_ram(self, cache_name: str):
+        return cache_name in self.cache_ram
+
+    def _save_cache_to_ram(self, cache_name: str, np_feature: np.ndarray):
+        if not self.check_in_ram(cache_name):
             if random.random() >= self.cache_ratio:
-                self.cache_ram[cache_path] = None
+                self.cache_ram[cache_name] = None
                 return False
-            self.cache_ram[cache_path] = np_feature
+            else:
+                self.cache_ram[cache_name] = np_feature
         return True
 
-    @timeit(5)
-    def _save_cache(self, wavname: str, feature: Tensor):
-        np_feature = feature.numpy(force=True)
-        feature_path = self._parse_cache_path(wavname)
+    @timeit(2)
+    def _save_cache_to_file(self, cache_name: str, np_feature: np.ndarray):
+        cache_path = self.cache_dir/f"{cache_name}.npy"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(cache_path, np_feature)
+
+    def save_cache(self, wavname: str, feature: Tensor):
+        np_feature = feature.detach().cpu().numpy()
+        cache_name = self._parse_cache_name(wavname)
         try:
             if self.cache_in_ram:
-                self._save_ram_cache_casually(feature_path, np_feature)
-            feature_path = self.cache_dir/feature_path
-            feature_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(feature_path, np_feature)
+                self._save_cache_to_ram(cache_name, np_feature)
+            if self.cache_in_disk:
+                self._save_cache_to_file(cache_name, np_feature)
         except RuntimeError:
-            print(f'Failed to save {feature_path}')
+            print(f'Failed to save {cache_name}')
         return None
 
-    def async_save_caches(self, wavnames: List[str], features: List[Tensor]):
-        if len(self.saving_features) > WAIT_FOR_SAVE:
-            self.saving_features = [f for f in self.saving_features if not f.ready() or f.get()]
+    @timeit(3)
+    def save_cache_batch(self, wavnames: List[str], features: List[Tensor]):
+        self.saving_features = [f for f in self.saving_features if not f.ready() or f.get()]
         while len(self.saving_features) > WAIT_FOR_SAVE:
             self.saving_features.pop(0).get()
-            
+
         for wavname, feature in zip(wavnames, features):
-            self.saving_features.append(self.pool.apply_async(self._save_cache, (wavname, feature)))
+            self.saving_features.append(self.pool.apply_async(self.save_cache, (wavname, feature)))
 
-    @timeit(1)
-    def _load_cache(self, wavname):
-        cache_path = self._parse_cache_path(wavname)
+    def _load_cache_from_ram(self, cache_name: str):
+        return self.cache_ram.get(cache_name)
 
-        np_feature = self.cache_ram.get(cache_path)
-        if np_feature is not None:
-            return np_feature
+    @timeit(3)
+    def _load_cache_from_file(self, cache_name: str):
+        cache_path = self.cache_dir/f"{cache_name}.npy"
+        try:
+            return np.load(cache_path)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            print(f'Failed to load {cache_path}')
+            cache_path.unlink()
+        return None
 
-        feature_path = self.cache_dir/f"{cache_path}.npy"
-        if os.path.exists(feature_path):
-            try:
-                np_feature = np.load(feature_path)
-            except RuntimeError:
-                print(f'Failed to load {feature_path}')
-                feature_path.unlink()
+    def load_cache(self, wavname):
+        if not self.use_cache:
+            return None
 
-        if np_feature is not None and self.cache_in_ram:
-            self._save_ram_cache_casually(cache_path, np_feature)
+        cache_name = self._parse_cache_name(wavname)
 
-        return np_feature
+        if self.cache_in_ram:
+            if (np_feature := self._load_cache_from_ram(cache_name)) is not None:
+                return np_feature
 
+        if self.cache_in_disk:
+            if (np_feature := self._load_cache_from_file(cache_name)) is not None:
+                if self.cache_in_ram:
+                    self._save_cache_to_ram(cache_name, np_feature)
+                return np_feature
+
+        return None
 
     def with_cache(self, func):
         @wraps(func)
         def wrapper(wavpath: str):
             wavname = Path(wavpath).stem
-            feature = self._load_cache(wavname)
-            return func(wavpath) if feature is None else feature
+            np_feature = self.load_cache(wavname)
+            return func(wavpath) if np_feature is None else np_feature
         return wrapper if self.use_cache else func
 
+    @timeit(1)
     def get_features(self, wavs: List[Tensor], wavnames: List[str], save=True) -> List[Tensor]:
         cached_states = [wav.ndim != 1 for wav in wavs]
 
@@ -177,7 +199,7 @@ class CacheManager:
         # process uncached data
         uncached_features = self.process_func(uncached_wavs) if uncached_wavs else []
         if self.use_cache and save and uncached_features:
-            self.async_save_caches(uncached_names, uncached_features)
+            self.save_cache_batch(uncached_names, uncached_features)
 
         # merge cached and uncached data
         features = []

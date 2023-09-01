@@ -282,13 +282,13 @@ class RunnerFusion():
         @wraps(func)
         def wrapper(wavpath: str):
             wavname = Path(wavpath).stem
-            feature1 = self.cache1_manager.use_cache and self.cache1_manager._load_cache(wavname)
-            feature2 = self.cache2_manager.use_cache and self.cache2_manager._load_cache(wavname)
-            if not isinstance(feature1, np.ndarray) or not isinstance(feature2, np.ndarray):
+            np_feature1 = self.cache1_manager.load_cache(wavname)
+            np_feature2 = self.cache2_manager.load_cache(wavname)
+            if not isinstance(np_feature1, np.ndarray) or not isinstance(np_feature2, np.ndarray):
                 wav = func(wavpath)
-            feature1 = wav if not isinstance(feature1, np.ndarray) else feature1
-            feature2 = wav if not isinstance(feature2, np.ndarray) else feature2
-            return feature1, feature2
+            np_feature1 = np_feature1 if isinstance(np_feature1, np.ndarray) else wav
+            np_feature2 = np_feature2 if isinstance(np_feature2, np.ndarray) else wav
+            return np_feature1, np_feature2
         return wrapper
 
     def process_wavs(self, upstream, featurizer, wavs: List[Tensor]) -> List[Tensor]:

@@ -1,7 +1,8 @@
 import os
 import numpy as np
-from typing import List, Tuple, Callable, Any, Optional, Dict
+from typing import List, Callable, Optional, Dict
 from functools import wraps
+from multiprocessing import Manager
 import multiprocessing.dummy as mp
 from pathlib import Path
 import random
@@ -46,9 +47,6 @@ class CacheManager:
         self.cache_in_disk = self.use_cache
         self.cache_dir = cache_dir or self._get_default_cache_dir()
 
-        if self.cache_in_ram:
-            assert self.config['downstream_expert']['datarc']['num_workers'] <= 1, \
-                "num_workers must not greater than 2 when cache in ram"
 
     def __enter__(self):
         if not hasattr(self.dataset, '_have_wrapped_loader'):
@@ -66,7 +64,8 @@ class CacheManager:
 
         if self.cache_in_ram:
             self.cache_ratio = self.args.cache_ram_ratio
-            self.cache_ram: Dict[str, np.ndarray] = {}
+            self.cache_manager = Manager()
+            self.cache_ram = self.cache_manager.dict()
             print(f"[CacheModule] - Use cache in RAM with ratio {self.cache_ratio:.2f}")
 
         if self.cache_in_disk:
@@ -85,6 +84,10 @@ class CacheManager:
             self.pool.close()
             self.pool.join()
             del self.pool
+        if hasattr(self, 'cache_manager') and self.cache_manager:
+            del self.cache_ram
+            self.cache_manager.shutdown()
+            del self.cache_manager
         if hasattr(self, 'original_loader') and self.original_loader:
             self.dataset._load_wav = self.original_loader
             if hasattr(self.dataset, '_have_wrapped_loader'):
@@ -132,7 +135,7 @@ class CacheManager:
 
     @timeit(3)
     def save_cache_batch(self, wavnames: List[str], features: List[Tensor]):
-        self.saving_features = [f for f in self.saving_features if not f.ready() or f.get()]
+        self.saving_features = [f for f in self.saving_features if not f.ready()]
         while len(self.saving_features) > WAIT_FOR_SAVE:
             self.saving_features.pop(0).get()
 

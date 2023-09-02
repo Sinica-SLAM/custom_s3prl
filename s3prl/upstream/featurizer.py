@@ -1,5 +1,6 @@
 import sys
 from typing import Callable, Dict, List, Tuple, Union
+import math
 
 import torch
 import torch.nn as nn
@@ -34,7 +35,8 @@ class Featurizer(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        self.name = "Featurizer"
+        if not hasattr(self, 'name'):
+            self.name = "Featurizer"
 
         upstream.eval()
         paired_wavs = [torch.randn(SAMPLE_RATE).to(upstream_device)]
@@ -140,58 +142,28 @@ class Featurizer(nn.Module):
         f_lens = self.get_feature_lens(paired_wavs)
         return tolist(f_lens, features)
 
-class GumbelSoftmax(Featurizer):
-    def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
-        super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
-        self.name = "GumbelSoftmax"
-        self.temp = nn.parameter.Parameter(torch.tensor(1.0), requires_grad=False)
-        self.step_count = 0
-
-        assert feature_selection == "hidden_states" and layer_selection is None, "GumbelSelect only support hidden_states feature selection and layer_selection is None"
-
-        self._weighted_sum = self._auto_select
-
-        self.show()
-
-    def show(self):
-        print(f"[{self.name}] - temp: {self.temp.item():.4f}")
-
-    def _auto_select(self, feature):
-        stacked_feature = torch.stack(feature, dim=0)
-
-        if self.normalize:
-            stacked_feature = F.layer_norm(
-                stacked_feature, (stacked_feature.shape[-1],)
-            )
-
-        _, *origin_shape = stacked_feature.shape
-        stacked_feature = stacked_feature.view(self.layer_num, -1)
-        log_probs = F.log_softmax(self.weights/self.temp, dim=-1)
-        norm_weights = gumbel_softmax(log_probs, hard=True, dim=-1)
-        weighted_feature = (norm_weights.unsqueeze(-1) * stacked_feature).sum(dim=0)
-        weighted_feature = weighted_feature.view(*origin_shape)
-
-        return weighted_feature
-
-    def step(self):
-        self.step_count += 1
-        with torch.no_grad():
-            if self.temp.item() > 0.1:
-                self.temp.add_(-0.000045)
-            else:
-                self.temp.mul_(0.99977)
-            self.temp.clamp_(min=0.0001, max=1.0)
-        if self.step_count % 100 == 0:
-            self.show()
 
 class AnnealSoftmax(Featurizer):
     def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
         super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
-        self.name = "AnnealSoftmax"
-        self.temp = nn.parameter.Parameter(torch.tensor(1.0), requires_grad=False)
-        self.step_count = 0
+        if not hasattr(self, 'name'):
+            self.name = "AnnealSoftmax"
 
-        assert feature_selection == "hidden_states" and layer_selection is None, "AnnealSoftmax only support hidden_states feature selection and layer_selection is None"
+        self.initT = 1.0
+        self.turnT = 0.1
+        self.finalT = 0.0001
+
+        self.linear_num = 30000
+        self.exp_period = 20000
+        self.reanneal = True
+        self.lowestT = self.initT
+
+        self.linear_step = (self.initT - self.turnT) / self.linear_num
+        self.exp_factor = math.pow(self.finalT / self.turnT, 1 / self.exp_period)
+
+        self.temp = nn.parameter.Parameter(torch.tensor(self.initT), requires_grad=False)
+
+        assert feature_selection == "hidden_states" and layer_selection is None, f"{self.name} only support hidden_states feature selection and layer_selection is None"
 
         self._weighted_sum = self._auto_select
 
@@ -199,6 +171,10 @@ class AnnealSoftmax(Featurizer):
 
     def show(self):
         print(f"[{self.name}] - temp: {self.temp.item():.4f}")
+
+    def _get_norm_weights(self):
+        temp = self.temp if self.training else self.lowestT
+        return F.softmax(self.weights/temp, dim=-1)
 
     def _auto_select(self, feature):
         stacked_feature = torch.stack(feature, dim=0)
@@ -210,16 +186,32 @@ class AnnealSoftmax(Featurizer):
 
         _, *origin_shape = stacked_feature.shape
         stacked_feature = stacked_feature.view(self.layer_num, -1)
-        norm_weights = F.softmax(self.weights/self.temp, dim=-1)
+        norm_weights = self._get_norm_weights()
         weighted_feature = (norm_weights.unsqueeze(-1) * stacked_feature).sum(dim=0)
         weighted_feature = weighted_feature.view(*origin_shape)
 
         return weighted_feature
 
     def step(self):
-        self.step_count += 1
+        temp = self.temp.item()
+
+        temp = temp-self.linear_step if temp > self.turnT else temp*self.exp_factor
+        if self.reanneal and temp <= self.finalT:
+            temp = self.turnT
+        temp = max(temp, self.finalT)
+        self.lowestT = min(self.lowestT, temp)
+
         with torch.no_grad():
-            self.temp.mul_(0.9993)
-            self.temp.clamp_(min=0.001, max=1.0)
-        if self.step_count % 100 == 0:
-            self.show()
+            self.temp.fill_(temp)
+
+
+class GumbelSoftmax(AnnealSoftmax):
+    def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
+        self.name = "GumbelSoftmax"
+
+        super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
+
+    def _get_norm_weights(self):
+        temp = self.temp if self.training else self.lowestT
+        log_probs = F.log_softmax(self.weights/temp, dim=-1)
+        return gumbel_softmax(log_probs, hard=True, dim=-1)

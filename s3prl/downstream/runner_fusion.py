@@ -458,6 +458,10 @@ class RunnerFusion():
                         )
                         batch_ids = []
                         records = defaultdict(list)
+                        if hasattr(self.ifeaturizer1.model, "show"):
+                            self.ifeaturizer1.model.show()
+                        if hasattr(self.ifeaturizer2.model, "show"):
+                            self.ifeaturizer2.model.show()
 
                     # evaluation and save checkpoint
                     save_names = []

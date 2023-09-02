@@ -394,6 +394,8 @@ class RunnerCache():
                         )
                         batch_ids = []
                         records = defaultdict(list)
+                        if hasattr(self.featurizer.model, "show"):
+                            self.featurizer.model.show()
 
                     # evaluation and save checkpoint
                     save_names = []

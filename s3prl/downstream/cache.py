@@ -60,7 +60,7 @@ class CacheManager:
             return self
 
         self.saving_features = []
-        self.pool = mp.Pool(min(4, os.cpu_count()), initializer=random.seed, initargs=(os.getpid(),))
+        self.pool = mp.Pool(min(8, os.cpu_count()), initializer=random.seed, initargs=(os.getpid(),))
 
         if self.cache_in_ram:
             self.cache_ratio = self.args.cache_ram_ratio
@@ -115,7 +115,6 @@ class CacheManager:
                 self.cache_ram[cache_name] = np_feature
         return True
 
-    @timeit(2)
     def _save_cache_to_file(self, cache_name: str, np_feature: np.ndarray):
         cache_path = self.cache_dir/f"{cache_name}.npy"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,7 +144,6 @@ class CacheManager:
     def _load_cache_from_ram(self, cache_name: str):
         return self.cache_ram.get(cache_name)
 
-    @timeit(3)
     def _load_cache_from_file(self, cache_name: str):
         cache_path = self.cache_dir/f"{cache_name}.npy"
         try:
@@ -157,6 +155,7 @@ class CacheManager:
             cache_path.unlink()
         return None
 
+    @timeit(3)
     def load_cache(self, wavname):
         if not self.use_cache:
             return None

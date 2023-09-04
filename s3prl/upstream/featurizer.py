@@ -154,9 +154,7 @@ class AnnealSoftmax(Featurizer):
         self.finalT = 0.0001
 
         self.linear_num = 30000
-        self.exp_period = 20000
-        self.reanneal = True
-        self.lowestT = self.initT
+        self.exp_period = 30000
 
         self.linear_step = (self.initT - self.turnT) / self.linear_num
         self.exp_factor = math.pow(self.finalT / self.turnT, 1 / self.exp_period)
@@ -173,8 +171,7 @@ class AnnealSoftmax(Featurizer):
         print(f"[{self.name}] - temp: {self.temp.item():.4f}")
 
     def _get_norm_weights(self):
-        temp = self.temp if self.training else self.lowestT
-        return F.softmax(self.weights/temp, dim=-1)
+        return F.softmax(self.weights/self.temp, dim=-1)
 
     def _auto_select(self, feature):
         stacked_feature = torch.stack(feature, dim=0)
@@ -196,10 +193,7 @@ class AnnealSoftmax(Featurizer):
         temp = self.temp.item()
 
         temp = temp-self.linear_step if temp > self.turnT else temp*self.exp_factor
-        if self.reanneal and temp <= self.finalT:
-            temp = self.turnT
         temp = max(temp, self.finalT)
-        self.lowestT = min(self.lowestT, temp)
 
         with torch.no_grad():
             self.temp.fill_(temp)
@@ -212,6 +206,5 @@ class GumbelSoftmax(AnnealSoftmax):
         super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
 
     def _get_norm_weights(self):
-        temp = self.temp if self.training else self.lowestT
-        log_probs = F.log_softmax(self.weights/temp, dim=-1)
+        log_probs = F.log_softmax(self.weights/self.temp, dim=-1)
         return gumbel_softmax(log_probs, hard=True, dim=-1)

@@ -37,28 +37,22 @@ else:
     os.mkdir(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-print('ckpt: ', ckpt.keys())
-weights = ckpt['Featurizer']['weights'] * args.scale
+print('ckpt: ', list(ckpt.keys()))
+weights = ckpt['Featurizer']['weights'].double() * args.scale
 temp = ckpt['Featurizer'].get('temp') or 1.0
-print('Temperature: ', temp)
-log_probs = F.log_softmax(weights/temp, dim=-1)
-probs = log_probs.exp()
-norm_weights = F.gumbel_softmax(log_probs, hard=True)
-print('Normalized weights of upstream: \n', norm_weights)
-weights = weights.cpu().double().tolist()
-log_probs = log_probs.cpu().double().tolist()
-probs = probs.cpu().double().tolist()
-norm_weights = norm_weights.cpu().double().tolist()
+print(f"Temperature: {temp.item() :0.4f}")
+probs = F.softmax(weights/temp, dim=-1)
+weights = weights.cpu().tolist()
+probs = probs.cpu().tolist()
 print('Weights: \n', weights)
 print('Probs: \n', probs)
-print('Normalized weights: \n', norm_weights)
 
 # plot weights
-x = range(1, len(norm_weights)+1)
+x = range(0, len(probs))
 plt.bar(x, probs, align='center')
 
 # set xticks and ylim
-plt.xticks(x, [str(i-1) for i in x])
+plt.xticks(x, x)
 plt.ylim(0)
 
 # set names

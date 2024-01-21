@@ -34,7 +34,7 @@ if len(args.name) == 0:
 if len(args.out_dir) == 0:
     args.out_dir = '/'.join(args.ckpt.split('/')[:-1]) # use the ckpt dir
 else:
-    os.mkdir(args.out_dir, exist_ok=True)
+    os.makedirs(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
 print('ckpt: ', list(ckpt.keys()))
@@ -49,7 +49,10 @@ print('Probs: \n', probs)
 
 # plot weights
 x = range(0, len(probs))
-plt.bar(x, probs, align='center')
+# plot highiest weight in red, others in blue
+plt.bar(x, probs, align='center'
+    , color=['red' if i == max(probs) else 'blue' for i in probs],
+    alpha=0.7)
 
 # set xticks and ylim
 plt.xticks(x, x)

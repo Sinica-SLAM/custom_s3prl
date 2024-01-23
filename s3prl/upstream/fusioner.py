@@ -31,11 +31,11 @@ class BaseFusionModule(nn.Module):
 
 
 class lambda_sum(BaseFusionModule):
-    def __init__(self, featurizer1, featurizer2, init_lamb=0.0, **kwargs):
+    def __init__(self, featurizer1, featurizer2, init_lamb=0.0, fix_lamb=False, **kwargs):
         super().__init__(featurizer1, featurizer2, **kwargs)
-        self.lamb = nn.Parameter(torch.tensor(init_lamb))
+        self.lamb = nn.Parameter(torch.tensor(init_lamb), requires_grad=not fix_lamb)
 
-        self.trainable = True
+        self.trainable = not fix_lamb
 
         self.showinfo()
 

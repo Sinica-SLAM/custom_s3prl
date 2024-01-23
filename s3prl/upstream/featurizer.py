@@ -35,8 +35,6 @@ class Featurizer(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        if not hasattr(self, 'name'):
-            self.name = "Featurizer"
 
         upstream.eval()
         paired_wavs = [torch.randn(SAMPLE_RATE).to(upstream_device)]
@@ -146,15 +144,13 @@ class Featurizer(nn.Module):
 class AnnealSoftmax(Featurizer):
     def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
         super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
-        if not hasattr(self, 'name'):
-            self.name = "AnnealSoftmax"
 
-        self.initT = 1.0
-        self.turnT = 0.1
-        self.finalT = 0.0001
+        self.initT = kwargs.get("initT", 1.0)
+        self.turnT = kwargs.get("turnT", 0.1)
+        self.finalT = kwargs.get("finalT", 0.0001)
 
-        self.linear_num = 30000
-        self.exp_period = 30000
+        self.linear_num = kwargs.get("linear_num", 30000)
+        self.exp_period = kwargs.get("exp_period", 30000)
 
         self.linear_step = (self.initT - self.turnT) / self.linear_num
         self.exp_factor = math.pow(self.finalT / self.turnT, 1 / self.exp_period)
@@ -168,7 +164,7 @@ class AnnealSoftmax(Featurizer):
         self.show()
 
     def show(self):
-        print(f"[{self.name}] - temp: {self.temp.item():.4f}")
+        print(f"[{self.__class__.__name__}] - temp: {self.temp.item():.4f}")
 
     def _get_norm_weights(self):
         return F.softmax(self.weights/self.temp, dim=-1)

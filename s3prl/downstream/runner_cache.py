@@ -182,12 +182,16 @@ class RunnerCache():
             trainable = True
 
         Featurizer = eval(self.args.featurizer)
+        conf = self.config.get('featurizer')
+        if conf is not None:
+            conf = conf.get(self.args.featurizer, {})
         model = Featurizer(
             upstream = self.upstream.model,
             feature_selection = self.args.upstream_feature_selection,
             layer_selection = self.args.upstream_layer_selection,
             upstream_device = self.args.device,
             normalize = self.args.upstream_feature_normalize,
+            **conf,
         ).to(self.args.device)
 
         return self._init_model(

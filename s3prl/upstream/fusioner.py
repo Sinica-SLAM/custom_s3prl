@@ -75,21 +75,29 @@ class cross_attention(BaseFusionModule):
     def __init__(self, featurizer1, featurizer2, fusion_heads=8, **kwargs):
         super().__init__(featurizer1, featurizer2, **kwargs)
         self.attention = MultiheadAttention(self.upstream_dim, fusion_heads, dropout=0.1, batch_first=True)
+        self.norm_layer = nn.LayerNorm(self.upstream_dim)
 
         self.trainable = True
 
         self.showinfo()
 
     def forward(self, features1: List[Tensor], features2: List[Tensor]):
+        # padding
         f_lens1, features1 = padding(features1) # (B, T, D)
         f_lens2, features2 = padding(features2) # (B, T, D)
         assert all([f_len1 == f_len2 for f_len1, f_len2 in zip(f_lens1, f_lens2)])
         f_lens = f_lens1
+
+        # cross attention
         masks = torch.zeros(features1.shape[:-1], dtype=torch.bool, device=features1.device) # (B, T)
         for mask, f_len in zip(masks, f_lens): # (T)
             mask[f_len:] = True
         features, _ = self.attention(features2, features1, features1, key_padding_mask=masks, need_weights=False) # (B, T, D)
-        return tolist(f_lens, features + features1) # B * (T, D)
+
+        # add & norm
+        features = self.norm_layer(features + features1)
+
+        return tolist(f_lens, features) # B * (T, D)
 
 
 class cross_in_time(BaseFusionModule):

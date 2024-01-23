@@ -25,7 +25,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--ckpt', type=str, help='This has to be a ckpt not a directory.', required=True)
 parser.add_argument('--name', type=str, default='', required=False)
 parser.add_argument('--out_dir', type=str, default='', required=False)
-parser.add_argument('-s', '--scale', type=float, default=1.0, required=False)
 args = parser.parse_args()
 
 assert os.path.isfile(args.ckpt), 'This has to be a ckpt file and not a directory.'
@@ -38,21 +37,25 @@ else:
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
 print('ckpt: ', list(ckpt.keys()))
-weights = ckpt['Featurizer']['weights'].double() * args.scale
+weights = ckpt['Featurizer']['weights'].double()
 temp = ckpt['Featurizer'].get('temp') or 1.0
 print(f"Temperature: {temp.item() :0.4f}")
+origin_probs = F.softmax(weights, dim=-1)
 probs = F.softmax(weights/temp, dim=-1)
+
 weights = weights.cpu().tolist()
+origin_probs = origin_probs.cpu().tolist()
 probs = probs.cpu().tolist()
 print('Weights: \n', weights)
+print('Origin Probs: \n', origin_probs)
 print('Probs: \n', probs)
 
 # plot weights
 x = range(0, len(probs))
-# plot highiest weight in red, others in blue
-plt.bar(x, probs, align='center'
-    , color=['red' if i == max(probs) else 'blue' for i in probs],
-    alpha=0.7)
+# plot original probs in blue
+plt.bar(x, origin_probs, color='b', alpha=0.7)
+# plot annealed probs in red overlapped with original probs
+plt.bar(x, probs, color='r', alpha=0.7)
 
 # set xticks and ylim
 plt.xticks(x, x)

@@ -182,7 +182,7 @@ class RunnerCache():
             trainable = True
 
         Featurizer = eval(self.args.featurizer)
-        conf = self.config.get('featurizer')
+        conf = self.config.get('featurizer_conf')
         if conf is not None:
             conf = conf.get(self.args.featurizer, {})
         model = Featurizer(

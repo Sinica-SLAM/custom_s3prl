@@ -14,7 +14,7 @@ optimizer:
   torch_optim_name: Adam
   lr: 1.0e-4
 
-featurizer:
+featurizer_conf:
   AnnealSoftmax: &AnnealSoftmax
     initT: 1.0
     turnT: 0.1
@@ -23,9 +23,10 @@ featurizer:
     exp_period: 10000
   GumbelSoftmax: *AnnealSoftmax
 
-fusioner:
+fusioner_conf:
   lambda_sum:
     init_lamb: 0.0
+    fix_lamb: False
   cat_in_dim: {}
   cat_in_time: {}
   cross_attention:

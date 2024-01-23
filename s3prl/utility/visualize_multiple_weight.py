@@ -38,7 +38,7 @@ if len(args.name) == 0:
 if len(args.out_dir) == 0:
     args.out_dir = '/'.join(args.ckpt.split('/')[:-1])  # use the ckpt dir
 else:
-    os.mkdir(args.out_dir, exist_ok=True)
+    os.makedirs(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
 print('Check point: ', list(ckpt.keys()))

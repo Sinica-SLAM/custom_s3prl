@@ -229,9 +229,8 @@ class RunnerFusion():
 
     def _get_fusioner(self):
         Fusioner = eval(self.args.fusioner)
-        conf = self.config.get('fusioner_conf')
-        if conf is not None:
-            conf = conf.get(self.args.fusioner, {})
+        conf = self.config.get('fusioner_conf', {})
+        conf = conf.get(self.args.fusioner, {})
         fusioner = Fusioner(
             self.ifeaturizer1.model,
             self.ifeaturizer2.model,

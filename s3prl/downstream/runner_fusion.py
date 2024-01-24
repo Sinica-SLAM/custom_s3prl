@@ -156,9 +156,8 @@ class RunnerFusion():
             print(f"[Runner] - iFeaturizer1 is trainable")
             trainable1 = True
         InnerFeaturizer1 = eval(self.args.ifeaturizer1)
-        conf = self.config.get('featurizer_conf')
-        if conf is not None:
-            conf1 = conf.get(self.args.ifeaturizer1, {})
+        conf = self.config.get('featurizer_conf', {})
+        conf1 = conf.get(self.args.ifeaturizer1, {})
         ifeaturizer1 = InnerFeaturizer1(
             upstream = self.upstream1.model,
             feature_selection = self.args.upstream1_feature_selection,
@@ -176,8 +175,7 @@ class RunnerFusion():
             print(f"[Runner] - iFeaturizer2 is trainable")
             trainable2 = True
         InnerFeaturizer2 = eval(self.args.ifeaturizer2)
-        if conf is not None:
-            conf2 = conf.get(self.args.ifeaturizer2, {})
+        conf2 = conf.get(self.args.ifeaturizer2, {})
         ifeaturizer2 = InnerFeaturizer2(
             upstream = self.upstream1.model if self.self_fusion else self.upstream2.model,
             feature_selection = self.args.upstream2_feature_selection,

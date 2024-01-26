@@ -7,9 +7,8 @@ from s3prl.upstream.featurizer import tolist, padding
 from typing import List
 
 class BaseFusionModule(nn.Module):
-    def __init__(self, featurizer1, featurizer2, **kwargs):
+    def __init__(self, featurizer1, featurizer2):
         super().__init__()
-        self.name = self.__class__.__name__
         assert featurizer1.output_dim == featurizer2.output_dim
         self.upstream_dim = featurizer1.output_dim
 
@@ -25,7 +24,7 @@ class BaseFusionModule(nn.Module):
         raise NotImplementedError
 
     def showinfo(self):
-        print(f"[Fusioner] - Name: {self.name}")
+        print(f"[Fusioner] - Name: {self.__class__.__name__}")
         print(f"[Fusioner] - Upstream dim: {self.upstream_dim}")
         print(f"[Fusioner] - Downsample rate: {self.downsample_rate}")
 
@@ -33,15 +32,29 @@ class BaseFusionModule(nn.Module):
 class lambda_sum(BaseFusionModule):
     def __init__(self, featurizer1, featurizer2, init_lamb=0.0, fix_lamb=False, **kwargs):
         super().__init__(featurizer1, featurizer2, **kwargs)
-        self.lamb = nn.Parameter(torch.tensor(init_lamb), requires_grad=not fix_lamb)
-
-        self.trainable = not fix_lamb
+        self.fix_lamb = fix_lamb
+        if fix_lamb:
+            self.l = torch.sigmoid(torch.tensor(init_lamb)).item()
+            self.trainable = False
+        else:
+            self.lamb = nn.Parameter(torch.tensor(init_lamb))
+            self.trainable = True
 
         self.showinfo()
 
+    def showinfo(self):
+        super().showinfo()
+        if self.fix_lamb:
+            print(f"[Fusioner] - Fix Weight: {self.l}")
+        else:
+            print(f"[Fusioner] - Init Weight: {torch.sigmoid(self.lamb).item()}")
+
     def forward(self, features1: List[Tensor], features2: List[Tensor]):
-        self.l = torch.sigmoid(self.lamb)
-        return [self.l * f1 + (1 - self.l) * f2 for f1, f2 in zip(features1, features2)]
+        if self.fix_lamb:
+            return [self.l * f1 + (1 - self.l) * f2 for f1, f2 in zip(features1, features2)]
+        else:
+            l = torch.sigmoid(self.lamb)
+            return [l * f1 + (1 - l) * f2 for f1, f2 in zip(features1, features2)]
 
 
 class cat_in_dim(BaseFusionModule):

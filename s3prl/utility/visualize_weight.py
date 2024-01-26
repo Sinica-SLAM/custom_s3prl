@@ -29,7 +29,7 @@ args = parser.parse_args()
 
 assert os.path.isfile(args.ckpt), 'This has to be a ckpt file and not a directory.'
 if len(args.name) == 0:
-    args.name = args.ckpt.split('/')[-1] # use the ckpt name
+    args.name = args.ckpt.split('/')[-2] # use the ckpt name
 if len(args.out_dir) == 0:
     args.out_dir = '/'.join(args.ckpt.split('/')[:-1]) # use the ckpt dir
 else:
@@ -54,4 +54,4 @@ plt.title(f'Distribution of normalized weight - {args.name}')
 plt.xlabel('Layer ID (First -> Last)')
 plt.ylabel('Weight')
 
-plt.savefig(os.path.join(args.out_dir, 'visualize_weight.png'), bbox_inches='tight')
+plt.savefig(os.path.join(args.out_dir, f'{args.name}_weight.png'), bbox_inches='tight')

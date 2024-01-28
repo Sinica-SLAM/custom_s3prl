@@ -26,11 +26,11 @@ featurizer_conf:
 fusioner_conf:
   lambda_sum:
     init_lamb: 0.0
-    fix_lamb: False
+    fix_lamb: True
   cat_in_dim: {}
   cat_in_time: {}
   cross_attention:
-    fusion_heads: 8
+    fusion_heads: 2
   cross_in_time: {}
 
 
@@ -64,10 +64,9 @@ downstream_expert:
     test-clean: ['test-clean']
     test-other: ['test-other']
     num_workers: 4
-    train_batch_size: 32
     batch_size: 32
     eval_batch_size: 1
-    libri_root: './data/LibriSpeech'
+    libri_root: './data/librispeech'
     bucket_file: './data/len_for_bucket'
     dict_path: "./downstream/asr/char.dict"
 

@@ -8,7 +8,6 @@ import tempfile
 import importlib
 from pathlib import Path
 from typing import List
-from functools import partial, wraps
 
 import torch
 import torchaudio
@@ -23,7 +22,6 @@ from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
 from s3prl.upstream.featurizer import *
-from s3prl.downstream.cache import CacheManager
 from s3prl.upstream.fusioner import *
 from s3prl.utility.helper import is_leader_process, get_model_state, show, defaultdict
 
@@ -56,8 +54,6 @@ class RunnerFusion():
         self.all_entries = [self.upstream1, self.ifeaturizer1, self.ifeaturizer2, self.fusioner, self.downstream]
         if not self.self_fusion:
             self.all_entries.append(self.upstream2)
-
-        self.cache1_manager, self.cache2_manager = self._get_cache()
 
 
     def _load_weight(self, model, name):
@@ -198,35 +194,6 @@ class RunnerFusion():
         )
 
 
-    def _get_cache(self):
-        libri_root = self.config['downstream_expert']['datarc']['libri_root']
-        dataset_name = self.config['downstream_expert']['datarc']['train']
-
-        assert os.path.exists(libri_root), f"libri_root {libri_root} does not exist"
-        assert len(dataset_name) == 1, f"Only support one dataset for caching, but got {dataset_name}"
-        dataset_name = dataset_name[0]
-
-        if not hasattr(self.downstream.model, f"train_dataset"):
-            self.downstream.model.get_dataloader("train") # create dataset
-        train_dataset = self.downstream.model.train_dataset
-
-        upstream1_name = self.args.upstream1
-        layer1 = str(self.args.upstream1_layer_selection)
-        process_func1 = partial(self.process_wavs, self.upstream1, self.ifeaturizer1)
-        cache1_dir = Path(libri_root)/"cache"/upstream1_name/dataset_name/layer1
-        use_cache1 = not self.upstream1.trainable and not self.ifeaturizer1.trainable and self.args.use_cache
-        cache1_manager = CacheManager(train_dataset, self.args, self.config, process_func1, self.with_cache, use_cache1, cache1_dir)
-
-        upstream2_name = self.args.upstream2
-        layer2 = str(self.args.upstream2_layer_selection)
-        process_func2 = partial(self.process_wavs, self.upstream2, self.ifeaturizer2)
-        cache2_dir = Path(libri_root)/"cache"/upstream2_name/dataset_name/layer2
-        use_cache2 = not self.upstream2.trainable and not self.ifeaturizer2.trainable and self.args.use_cache
-        cache2_manager = CacheManager(train_dataset, self.args, self.config, process_func2, self.with_cache, use_cache2, cache2_dir)
-
-        return cache1_manager, cache2_manager
-
-
     def _get_fusioner(self):
         Fusioner = eval(self.args.fusioner)
         conf = self.config.get('fusioner_conf', {})
@@ -283,19 +250,6 @@ class RunnerFusion():
         self._load_weight(scheduler, 'Scheduler')
         return scheduler
 
-
-    def with_cache(self, func):
-        @wraps(func)
-        def wrapper(wavpath: str):
-            wavname = Path(wavpath).stem
-            np_feature1 = self.cache1_manager.load_cache(wavname)
-            np_feature2 = self.cache2_manager.load_cache(wavname)
-            if not isinstance(np_feature1, np.ndarray) or not isinstance(np_feature2, np.ndarray):
-                wav = func(wavpath)
-            np_feature1 = np_feature1 if isinstance(np_feature1, np.ndarray) else wav
-            np_feature2 = np_feature2 if isinstance(np_feature2, np.ndarray) else wav
-            return np_feature1, np_feature2
-        return wrapper
 
     def process_wavs(self, upstream, featurizer, wavs: List[Tensor]) -> List[Tensor]:
         if upstream.trainable:
@@ -356,164 +310,155 @@ class RunnerFusion():
         epoch = self.init_ckpt.get('Epoch', 0)
         train_split = self.config['runner'].get("train_dataloader", "train")
 
-        with self.cache1_manager as cache1_manager, self.cache2_manager as cache2_manager:
-            while pbar.n < pbar.total:
+        while pbar.n < pbar.total:
+            try:
+                dataloader = self.downstream.model.get_dataloader(train_split, epoch=epoch)
+            except TypeError as e:
+                if "unexpected keyword argument 'epoch'" in str(e):
+                    dataloader = self.downstream.model.get_dataloader(train_split)
+                    if hasattr(dataloader, "sampler") and isinstance(dataloader.sampler, DistributedSampler):
+                        dataloader.sampler.set_epoch(epoch)
+                else:
+                    raise
+
+            for batch_id, (wavs, labels, wavnames) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc='train', file=tqdm_file)):
+                # try/except block for forward/backward
                 try:
-                    dataloader = self.downstream.model.get_dataloader(train_split, epoch=epoch)
-                except TypeError as e:
-                    if "unexpected keyword argument 'epoch'" in str(e):
-                        dataloader = self.downstream.model.get_dataloader(train_split)
-                        if hasattr(dataloader, "sampler") and isinstance(dataloader.sampler, DistributedSampler):
-                            dataloader.sampler.set_epoch(epoch)
+                    if pbar.n >= pbar.total:
+                        break
+                    global_step = pbar.n + 1
+
+
+                    features1 = self.process_wavs(self.upstream1, self.ifeaturizer1, wavs)
+                    features2 = self.process_wavs(self.upstream2, self.ifeaturizer2, wavs)
+
+                    for i, (f1, f2) in enumerate(zip(features1, features2)):
+                        if f1.shape != f2.shape:
+                            print(f'[Runner] - Warning: feature1.shape: {f1.shape}, feature2.shape: {f2.shape} unmatch!!')
+                            f_len_min = min(f1.size(0), f2.size(0))
+                            features1[i] = f1.narrow(0, 0, f_len_min)
+                            features2[i] = f2.narrow(0, 0, f_len_min)
+
+
+                    features = self.fusioner.model(features1, features2)
+
+                    if specaug:
+                        features, _ = specaug(features)
+
+                    loss = self.downstream.model(
+                        train_split,
+                        features, labels, wavnames,
+                        records = records,
+                    )
+                    batch_ids.append(batch_id)
+
+                    gradient_accumulate_steps = self.config['runner'].get('gradient_accumulate_steps')
+                    (loss / gradient_accumulate_steps).backward()
+                    del loss
+
+                except RuntimeError as e:
+                    if 'CUDA out of memory' in str(e):
+                        print(f'[Runner] - CUDA out of memory at step {global_step}')
+                        if is_initialized():
+                            raise
+                        with torch.cuda.device(self.args.device):
+                            torch.cuda.empty_cache()
+                        optimizer.zero_grad()
+                        continue
                     else:
                         raise
 
-                for batch_id, (np_wavs, labels, wavnames) in enumerate(tqdm(dataloader, dynamic_ncols=True, desc='train', file=tqdm_file)):
-                    # try/except block for forward/backward
-                    try:
-                        if pbar.n >= pbar.total:
-                            break
-                        global_step = pbar.n + 1
+                # whether to accumulate gradient
+                backward_steps += 1
+                if backward_steps % gradient_accumulate_steps > 0:
+                    continue
 
-                        wavs1, wavs2 = [], []
-                        for np_wav1, np_wav2 in np_wavs:
-                            wav1 = torch.FloatTensor(np_wav1).to(self.args.device, non_blocking=True)
-                            wav2 = torch.FloatTensor(np_wav2).to(self.args.device, non_blocking=True) \
-                                if np_wav1 is not np_wav2 else wav1
-                            wavs1.append(wav1)
-                            wavs2.append(wav2)
+                # gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    trainable_paras, self.config['runner']['gradient_clipping'])
 
+                # optimize
+                if math.isnan(grad_norm):
+                    print(f'[Runner] - grad norm is NaN at step {global_step}')
+                else:
+                    optimizer.step()
+                    if hasattr(self.ifeaturizer1.model, "step"):
+                        self.ifeaturizer1.model.step()
+                    if hasattr(self.ifeaturizer2.model, "step"):
+                        self.ifeaturizer2.model.step()
+                optimizer.zero_grad()
 
-                        features1 = cache1_manager.get_features(wavs1, wavnames)
-                        features2 = cache2_manager.get_features(wavs2, wavnames)
+                # adjust learning rate
+                if scheduler:
+                    scheduler.step()
 
-                        for i, (f1, f2) in enumerate(zip(features1, features2)):
-                            if f1.shape != f2.shape:
-                                print(f'[Runner] - Warning: feature1.shape: {f1.shape}, feature2.shape: {f2.shape} unmatch!!')
-                                f_len_min = min(f1.size(0), f2.size(0))
-                                features1[i] = f1.narrow(0, 0, f_len_min)
-                                features2[i] = f2.narrow(0, 0, f_len_min)
+                if not is_leader_process():
+                    batch_ids = []
+                    records = defaultdict(list)
+                    continue
 
+                # logging
+                if global_step % self.config['runner']['log_step'] == 0:
+                    self.downstream.model.log_records(
+                        train_split,
+                        records = records,
+                        logger = logger,
+                        global_step = global_step,
+                        batch_ids = batch_ids,
+                        total_batch_num = len(dataloader),
+                    )
+                    batch_ids = []
+                    records = defaultdict(list)
+                    if hasattr(self.ifeaturizer1.model, "show"):
+                        self.ifeaturizer1.model.show()
+                    if hasattr(self.ifeaturizer2.model, "show"):
+                        self.ifeaturizer2.model.show()
 
-                        features = self.fusioner.model(features1, features2)
+                # evaluation and save checkpoint
+                save_names = []
 
-                        if specaug:
-                            features, _ = specaug(features)
+                if global_step % self.config['runner']['eval_step'] == 0:
+                    for split in self.config['runner']['eval_dataloaders']:
+                        save_names += self.evaluate(split, logger, global_step)
 
-                        loss = self.downstream.model(
-                            train_split,
-                            features, labels, wavnames,
-                            records = records,
-                        )
-                        batch_ids.append(batch_id)
+                if global_step % self.config['runner']['save_step'] == 0:
+                    def check_ckpt_num(directory):
+                        max_keep = self.config['runner']['max_keep']
+                        ckpt_pths = glob.glob(f'{directory}/states-*.ckpt')
+                        if len(ckpt_pths) >= max_keep:
+                            ckpt_pths = sorted(ckpt_pths, key=lambda pth: int(pth.split('-')[-1].split('.')[0]))
+                            for ckpt_pth in ckpt_pths[:len(ckpt_pths) - max_keep + 1]:
+                                os.remove(ckpt_pth)
+                    check_ckpt_num(self.args.expdir)
+                    save_names.append(f'states-{global_step}.ckpt')
 
-                        gradient_accumulate_steps = self.config['runner'].get('gradient_accumulate_steps')
-                        (loss / gradient_accumulate_steps).backward()
-                        del loss
+                if len(save_names) > 0:
+                    all_states = {
+                        'Optimizer': optimizer.state_dict(),
+                        'Step': global_step,
+                        'Epoch': epoch,
+                        'Args': self.args,
+                        'Config': self.config,
+                    }
 
-                    except RuntimeError as e:
-                        if 'CUDA out of memory' in str(e):
-                            print(f'[Runner] - CUDA out of memory at step {global_step}')
-                            if is_initialized():
-                                raise
-                            with torch.cuda.device(self.args.device):
-                                torch.cuda.empty_cache()
-                            optimizer.zero_grad()
-                            continue
-                        else:
-                            raise
+                    for entry in self.all_entries:
+                        if entry.trainable:
+                            all_states[entry.name] = get_model_state(entry.model)
 
-                    # whether to accumulate gradient
-                    backward_steps += 1
-                    if backward_steps % gradient_accumulate_steps > 0:
-                        continue
-
-                    # gradient clipping
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        trainable_paras, self.config['runner']['gradient_clipping'])
-
-                    # optimize
-                    if math.isnan(grad_norm):
-                        print(f'[Runner] - grad norm is NaN at step {global_step}')
-                    else:
-                        optimizer.step()
-                        if hasattr(self.ifeaturizer1.model, "step"):
-                            self.ifeaturizer1.model.step()
-                        if hasattr(self.ifeaturizer2.model, "step"):
-                            self.ifeaturizer2.model.step()
-                    optimizer.zero_grad()
-
-                    # adjust learning rate
                     if scheduler:
-                        scheduler.step()
+                        all_states['Scheduler'] = scheduler.state_dict()
 
-                    if not is_leader_process():
-                        batch_ids = []
-                        records = defaultdict(list)
-                        continue
+                    if is_initialized():
+                        all_states['WorldSize'] = get_world_size()
 
-                    # logging
-                    if global_step % self.config['runner']['log_step'] == 0:
-                        self.downstream.model.log_records(
-                            train_split,
-                            records = records,
-                            logger = logger,
-                            global_step = global_step,
-                            batch_ids = batch_ids,
-                            total_batch_num = len(dataloader),
-                        )
-                        batch_ids = []
-                        records = defaultdict(list)
-                        if hasattr(self.ifeaturizer1.model, "show"):
-                            self.ifeaturizer1.model.show()
-                        if hasattr(self.ifeaturizer2.model, "show"):
-                            self.ifeaturizer2.model.show()
+                    save_paths = [os.path.join(self.args.expdir, name) for name in save_names]
+                    tqdm.write(f'[Runner] - Save the checkpoint to:')
+                    for i, path in enumerate(save_paths):
+                        tqdm.write(f'{i + 1}. {path}')
+                        torch.save(all_states, path)
 
-                    # evaluation and save checkpoint
-                    save_names = []
-
-                    if global_step % self.config['runner']['eval_step'] == 0:
-                        for split in self.config['runner']['eval_dataloaders']:
-                            save_names += self.evaluate(split, logger, global_step)
-
-                    if global_step % self.config['runner']['save_step'] == 0:
-                        def check_ckpt_num(directory):
-                            max_keep = self.config['runner']['max_keep']
-                            ckpt_pths = glob.glob(f'{directory}/states-*.ckpt')
-                            if len(ckpt_pths) >= max_keep:
-                                ckpt_pths = sorted(ckpt_pths, key=lambda pth: int(pth.split('-')[-1].split('.')[0]))
-                                for ckpt_pth in ckpt_pths[:len(ckpt_pths) - max_keep + 1]:
-                                    os.remove(ckpt_pth)
-                        check_ckpt_num(self.args.expdir)
-                        save_names.append(f'states-{global_step}.ckpt')
-
-                    if len(save_names) > 0:
-                        all_states = {
-                            'Optimizer': optimizer.state_dict(),
-                            'Step': global_step,
-                            'Epoch': epoch,
-                            'Args': self.args,
-                            'Config': self.config,
-                        }
-
-                        for entry in self.all_entries:
-                            if entry.trainable:
-                                all_states[entry.name] = get_model_state(entry.model)
-
-                        if scheduler:
-                            all_states['Scheduler'] = scheduler.state_dict()
-
-                        if is_initialized():
-                            all_states['WorldSize'] = get_world_size()
-
-                        save_paths = [os.path.join(self.args.expdir, name) for name in save_names]
-                        tqdm.write(f'[Runner] - Save the checkpoint to:')
-                        for i, path in enumerate(save_paths):
-                            tqdm.write(f'{i + 1}. {path}')
-                            torch.save(all_states, path)
-
-                    pbar.update(1)
-                epoch += 1
+                pbar.update(1)
+            epoch += 1
 
         pbar.close()
 

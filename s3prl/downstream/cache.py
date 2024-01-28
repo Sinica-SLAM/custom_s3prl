@@ -60,7 +60,7 @@ class CacheManager:
             return self
 
         self.saving_features = []
-        self.pool = mp.Pool(min(8, os.cpu_count()), initializer=random.seed, initargs=(os.getpid(),))
+        self.pool = mp.Pool(4, initializer=random.seed, initargs=(os.getpid(),))
 
         if self.cache_in_ram:
             self.cache_ratio = self.args.cache_ram_ratio

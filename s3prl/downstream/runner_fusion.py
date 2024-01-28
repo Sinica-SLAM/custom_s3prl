@@ -328,7 +328,7 @@ class RunnerFusion():
                         break
                     global_step = pbar.n + 1
 
-
+                    wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
                     features1 = self.process_wavs(self.upstream1, self.ifeaturizer1, wavs)
                     features2 = self.process_wavs(self.upstream2, self.ifeaturizer2, wavs)
 

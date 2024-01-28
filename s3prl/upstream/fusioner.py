@@ -128,3 +128,22 @@ class cross_in_time(BaseFusionModule):
             *other, T, D = f1.shape
             return torch.cat([f1, f2], dim=-1).reshape(*other, 2*T, D)
         return [cross(f1, f2) for f1, f2 in zip(features1, features2)]
+
+
+class gate_dim(BaseFusionModule):
+    def __init__(self, featurizer1, featurizer2, init_value=1.5, **kwargs):
+        super().__init__(featurizer1, featurizer2, **kwargs)
+
+        self.trainable = True
+
+        self.gate_values = nn.Parameter(torch.empty(self.upstream_dim).fill_(init_value))
+
+        self.showinfo()
+
+    def _get_gate(self):
+        return torch.sigmoid(self.gate_values)
+
+    def forward(self, features1: List[Tensor], features2: List[Tensor]):
+        gates = self._get_gate() # gate for each dimension
+        # element-wise multiplication of gate and feature
+        return [f1 * gate + f2 * (1 - gate) for f1, f2, gate in zip(features1, features2, gates)]

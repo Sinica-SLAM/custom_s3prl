@@ -32,6 +32,8 @@ fusioner_conf:
   cross_attention:
     fusion_heads: 2
   cross_in_time: {}
+  gate_dim:
+    init_value: 1.5
 
 
 # comment the whole scheduler config block

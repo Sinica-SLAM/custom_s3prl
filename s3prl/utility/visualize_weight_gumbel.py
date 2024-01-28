@@ -52,10 +52,10 @@ print('Probs: \n', probs)
 
 # plot weights
 x = range(0, len(probs))
-# plot original probs in blue
-plt.bar(x, origin_probs, color='b', alpha=0.7)
+# plot original probs in blue, with highiest prob in red
+plt.bar(x, origin_probs, color=['b' if i != max(origin_probs) else 'r' for i in origin_probs], alpha=0.7)
 # plot annealed probs in red overlapped with original probs
-plt.bar(x, probs, color='r', alpha=0.7)
+#plt.bar(x, probs, color='r', alpha=0.7)
 
 # set xticks and ylim
 plt.xticks(x, x)

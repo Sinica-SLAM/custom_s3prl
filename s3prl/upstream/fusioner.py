@@ -1,8 +1,12 @@
 
+import math
+
 import torch
 from torch import nn
 from torch import Tensor
 from torch.nn import MultiheadAttention
+import torch.nn.functional as F
+from torch.nn.functional import gumbel_softmax
 from s3prl.upstream.featurizer import tolist, padding
 from typing import List
 
@@ -136,14 +140,85 @@ class gate_dim(BaseFusionModule):
 
         self.trainable = True
 
-        self.gate_values = nn.Parameter(torch.empty(self.upstream_dim).fill_(init_value))
+        gate_values = torch.empty(self.upstream_dim).fill_(init_value)
+        self.gate_values = nn.Parameter(gate_values, requires_grad=True)
 
-        self.showinfo()
+        if self.__class__.__name__ == 'gate_dim':
+            self.showinfo()
 
     def _get_gate(self):
         return torch.sigmoid(self.gate_values)
 
     def forward(self, features1: List[Tensor], features2: List[Tensor]):
-        gates = self._get_gate() # gate for each dimension
+        gates = self._get_gate()
         # element-wise multiplication of gate and feature
-        return [f1 * gate + f2 * (1 - gate) for f1, f2, gate in zip(features1, features2, gates)]
+        return [f1 * gates + f2 * (1 - gates) for f1, f2 in zip(features1, features2)]
+
+    def show(self):
+        # count how many gate_values are greater than 0
+        gates = self._get_gate().detach()
+        dim1_count = torch.sum(gates > 0.7).item()
+        dim2_count = torch.sum(gates < 0.3).item()
+        both_count = self.upstream_dim - dim1_count - dim2_count
+        print(f"[Fusioner] - Gate: {dim1_count} dim1, {dim2_count} dim2, {both_count} both")
+
+
+class gumbel_gate(gate_dim):
+    def __init__(
+            self,
+            featurizer1,
+            featurizer2,
+            init_value=0.0,
+            initT = 1.0,
+            turnT = 0.1,
+            finalT = 0.0001,
+            linear_num = 30000,
+            exp_period = 30000,
+            **kwargs
+        ):
+        super().__init__(featurizer1, featurizer2, init_value, **kwargs)
+
+        self.initT = initT
+        self.turnT = turnT
+        self.finalT = finalT
+
+        self.linear_num = linear_num
+        self.exp_period = exp_period
+
+        self.linear_step = (self.initT - self.turnT) / self.linear_num
+        self.exp_factor = math.pow(self.finalT / self.turnT, 1 / self.exp_period)
+
+        self.temp = nn.parameter.Parameter(torch.tensor(self.initT), requires_grad=False)
+
+        # scale not required grad
+        self.temp = nn.Parameter(torch.tensor(1.0), requires_grad=False)
+
+        if self.__class__.__name__ == 'gumbel_gate':
+            self.showinfo()
+
+    def showinfo(self):
+        super().showinfo()
+        print(f"[Fusioner] - temp: {self.temp.item():.4f}")
+
+    def show(self):
+        # count how many gate_values are greater than 0
+        gates = self._get_gate().detach()
+        dim1_count = torch.sum(gates == 1).item()
+        dim2_count = self.upstream_dim - dim1_count
+        print(f"[Fusioner] - Gate: {dim1_count} dim1, {dim2_count} dim2")
+        print(f"[Fusioner] - Temperature: {self.temp.item():.4f}")
+
+    def _get_gate(self):
+        gates = torch.sigmoid(self.gate_values/self.temp)
+        gates = torch.stack([gates, 1-gates], dim=0)
+        log_gates = torch.log(gates)
+        return gumbel_softmax(log_gates, hard=True, dim=0)[0]
+
+    def step(self):
+        temp = self.temp.item()
+
+        temp = temp-self.linear_step if temp > self.turnT else temp*self.exp_factor
+        temp = max(temp, self.finalT)
+
+        with torch.no_grad():
+            self.temp.fill_(temp)

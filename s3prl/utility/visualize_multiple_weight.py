@@ -67,31 +67,44 @@ if fusioner := ckpt.get('Fusioner'):
             norm_weights1 *= true_lamb
         if norm_weights2 is not None:
             norm_weights2 *= (1-true_lamb)
+    gate_values = fusioner.get('gate_values')
+    if gate_values is not None:
+        if temp := fusioner.get('temp'):
+            gate_values /= temp
+            print(f'Temperature: {temp.item():.4f}')
+        gates = torch.sigmoid(gate_values).tolist()
+        gates = list(enumerate(gates))
+        gates.sort(key=lambda x: x[1])
+        print('Gates: ')
+        for i, gate in gates:
+            print(f'Dim {i}: {gate:.4f}')
 norm_weights1 = norm_weights1.cpu().tolist() if norm_weights1 is not None else None
 norm_weights2 = norm_weights2.cpu().tolist() if norm_weights2 is not None else None
 
 
-upstream1 = args.upstream1
-upstream2 = args.upstream2
+
 # plot weights
-x = range(0, len(norm_weights1 or norm_weights2))
-if norm_weights1 is not None:
-    plt.bar(x, norm_weights1, 0.3, align='edge', color='deepskyblue')
-if norm_weights2 is not None:
-    plt.bar(x, norm_weights2, -0.3, align='edge', color='orange')
-# set xticks and ylim
-plt.xticks(x, x)
-# plt.ylim(0, 0.4)
-# set names
-plt.title(f'Distribution of normalized weight - {args.name}')
-plt.xlabel('Layer ID (First -> Last)')
-plt.ylabel('Weight')
-# set legend
-colors = {upstream1: 'deepskyblue', upstream2: 'orange'}
-labels = list(colors.keys())
-handles = [plt.Rectangle((0, 0), 1, 1, color=colors[label])
-           for label in labels]
-plt.legend(handles, labels)
-img_path = os.path.join(args.out_dir, f'{args.name}_weight.png')
-plt.savefig(img_path, bbox_inches='tight')
-print("Image saved at " + img_path )
+if norm_weights1 or norm_weights2:
+    upstream1 = args.upstream1
+    upstream2 = args.upstream2
+    x = range(0, len(norm_weights1 or norm_weights2))
+    if norm_weights1 is not None:
+        plt.bar(x, norm_weights1, 0.3, align='edge', color='deepskyblue')
+    if norm_weights2 is not None:
+        plt.bar(x, norm_weights2, -0.3, align='edge', color='orange')
+    # set xticks and ylim
+    plt.xticks(x, x)
+    # plt.ylim(0, 0.4)
+    # set names
+    plt.title(f'Distribution of normalized weight - {args.name}')
+    plt.xlabel('Layer ID (First -> Last)')
+    plt.ylabel('Weight')
+    # set legend
+    colors = {upstream1: 'deepskyblue', upstream2: 'orange'}
+    labels = list(colors.keys())
+    handles = [plt.Rectangle((0, 0), 1, 1, color=colors[label])
+            for label in labels]
+    plt.legend(handles, labels)
+    img_path = os.path.join(args.out_dir, f'{args.name}_weight.png')
+    plt.savefig(img_path, bbox_inches='tight')
+    print("Image saved at " + img_path )

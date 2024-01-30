@@ -386,6 +386,8 @@ class RunnerFusion():
                         self.ifeaturizer1.model.step()
                     if hasattr(self.ifeaturizer2.model, "step"):
                         self.ifeaturizer2.model.step()
+                    if hasattr(self.fusioner.model, "step"):
+                        self.fusioner.model.step()
                 optimizer.zero_grad()
 
                 # adjust learning rate
@@ -413,6 +415,8 @@ class RunnerFusion():
                         self.ifeaturizer1.model.show()
                     if hasattr(self.ifeaturizer2.model, "show"):
                         self.ifeaturizer2.model.show()
+                    if hasattr(self.fusioner.model, "show"):
+                        self.fusioner.model.show()
 
                 # evaluation and save checkpoint
                 save_names = []

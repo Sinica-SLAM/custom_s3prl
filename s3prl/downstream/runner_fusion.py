@@ -266,6 +266,27 @@ class RunnerFusion():
 
         return features
 
+    def process_wavs_self_fusion(self, upstream, featurizer1, featurizer2, wavs: List[Tensor]) -> List[Tensor]:
+        if upstream.trainable:
+            features = upstream.model(wavs)
+        else:
+            with torch.no_grad():
+                features = upstream.model(wavs)
+
+        if upstream.trainable or featurizer1.trainable:
+            features1 = featurizer1.model(wavs, features)
+        else:
+            with torch.no_grad():
+                features1 = featurizer1.model(wavs, features)
+
+        if upstream.trainable or featurizer2.trainable:
+            features2 = featurizer2.model(wavs, features)
+        else:
+            with torch.no_grad():
+                features2 = featurizer2.model(wavs, features)
+
+        return features1, features2
+
 
     def train(self):
         # trainable parameters and train/eval mode
@@ -329,8 +350,11 @@ class RunnerFusion():
                     global_step = pbar.n + 1
 
                     wavs = [torch.FloatTensor(wav).to(self.args.device) for wav in wavs]
-                    features1 = self.process_wavs(self.upstream1, self.ifeaturizer1, wavs)
-                    features2 = self.process_wavs(self.upstream2, self.ifeaturizer2, wavs)
+                    if self.self_fusion:
+                        features1, features2 = self.process_wavs_self_fusion(self.upstream1, self.ifeaturizer1, self.ifeaturizer2, wavs)
+                    else:
+                        features1 = self.process_wavs(self.upstream1, self.ifeaturizer1, wavs)
+                        features2 = self.process_wavs(self.upstream2, self.ifeaturizer2, wavs)
 
                     for i, (f1, f2) in enumerate(zip(features1, features2)):
                         if f1.shape != f2.shape:

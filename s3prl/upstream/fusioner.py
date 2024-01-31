@@ -211,7 +211,7 @@ class gumbel_gate(gate_dim):
     def _get_gate(self):
         gates = torch.sigmoid(self.gate_values/self.temp)
         gates = torch.stack([gates, 1-gates], dim=0)
-        log_gates = torch.log(gates)
+        log_gates = torch.log(gates + 1e-10)
         return gumbel_softmax(log_gates, hard=True, dim=0)[0]
 
     def step(self):

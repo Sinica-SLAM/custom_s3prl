@@ -70,14 +70,21 @@ if fusioner := ckpt.get('Fusioner'):
     gate_values = fusioner.get('gate_values')
     if gate_values is not None:
         if temp := fusioner.get('temp'):
-            gate_values /= temp
+            #gate_values /= temp
             print(f'Temperature: {temp.item():.4f}')
         gates = torch.sigmoid(gate_values).tolist()
         gates = list(enumerate(gates))
         gates.sort(key=lambda x: x[1])
         print('Gates: ')
+        gate1 = 0
+        gate2 = 0
         for i, gate in gates:
             print(f'Dim {i}: {gate:.4f}')
+            if gate > 0.5:
+                gate1 += 1
+            else:
+                gate2 += 1
+        print(f'Gate1: {gate1}, Gate2: {gate2}')
 norm_weights1 = norm_weights1.cpu().tolist() if norm_weights1 is not None else None
 norm_weights2 = norm_weights2.cpu().tolist() if norm_weights2 is not None else None
 

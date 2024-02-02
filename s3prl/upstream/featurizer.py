@@ -201,4 +201,10 @@ class GumbelSoftmax(AnnealSoftmax):
 
     def _get_norm_weights(self):
         log_probs = F.log_softmax(self.weights/self.temp, dim=-1)
-        return gumbel_softmax(log_probs, hard=True, dim=-1)
+        gumbel_select = gumbel_softmax(log_probs, hard=True, dim=-1)
+        if self.training:
+            return gumbel_select
+        else:
+            # in eval mode, use the argmax of gumbel softmax
+            _, max_idx = gumbel_select.max(dim=-1)
+            return F.one_hot(max_idx, num_classes=self.layer_num).float()

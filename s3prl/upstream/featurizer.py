@@ -24,6 +24,7 @@ def padding(features: List[Tensor], padding_value: float = 0) -> Tuple[List[int]
     feature = pad_sequence(features, batch_first=True, padding_value=padding_value)
     return feature_lens, feature
 
+
 class Featurizer(nn.Module):
     def __init__(
         self,
@@ -159,17 +160,13 @@ class AnnealSoftmax(Featurizer):
 
         assert feature_selection == "hidden_states" and layer_selection is None, f"{self.__class__.__name__} only support hidden_states feature selection and layer_selection is None"
 
-        self._weighted_sum = self._auto_select
-
-        self.show()
-
     def show(self):
         print(f"[{self.__class__.__name__}] - temp: {self.temp.item():.4f}")
 
     def _get_norm_weights(self):
         return F.softmax(self.weights/self.temp, dim=-1)
 
-    def _auto_select(self, feature):
+    def _weighted_sum(self, feature):
         stacked_feature = torch.stack(feature, dim=0)
 
         if self.normalize:
@@ -196,15 +193,127 @@ class AnnealSoftmax(Featurizer):
 
 
 class GumbelSoftmax(AnnealSoftmax):
-    def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
-        super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
+    def _get_norm_weights(self):
+        if self.training:
+            # in training mode, use the gumbel softmax
+            log_probs = F.log_softmax(self.weights/self.temp, dim=-1) # (L)
+            gumbel_select = gumbel_softmax(log_probs, hard=True, dim=-1) # (L)
+            return gumbel_select # (L)
+        else:
+            # in eval mode, use the argmax of weights
+            _, max_idx = self.weights.max(dim=-1) # (L)
+            return F.one_hot(max_idx, num_classes=self.layer_num).float() # (L)
+
+
+class GumbelFusion(nn.Module):
+    def __init__(
+        self,
+        upstream: UpstreamBase,
+        feature_selection: str = "hidden_states",
+        upstream_device: str = "cuda",
+        layer_selection: int = None,
+        normalize: bool = False,
+        **kwargs,
+    ):
+        super().__init__()
+
+        upstream.eval()
+        paired_wavs = [torch.randn(SAMPLE_RATE).to(upstream_device)]
+        with torch.no_grad():
+            paired_features = upstream(paired_wavs)
+
+        assert feature_selection is None or feature_selection == "hidden_states", f"{self.__class__.__name__} only support hidden_states feature selection"
+        assert layer_selection is None, f"{self.__class__.__name__} only support layer_selection is None"
+        self.feature_selection = "hidden_states"
+        self.layer_selection = None
+        self.normalize = normalize
+
+        features = self._select_feature(paired_features)
+        self.layer_num = len(features)
+        assert all(f.size(-1) == features[0].size(-1) for f in features), f"{self.__class__.__name__} only support the same feature dimension"
+        self.output_dim = features[0].size(-1)
+
+        if hasattr(upstream, "get_downsample_rates"):
+            self.downsample_rate = upstream.get_downsample_rates(feature_selection)
+            show(
+                f"[{self.__class__.__name__}] - The selected feature {feature_selection}'s downsample rate is {self.downsample_rate}",
+                file=sys.stderr,
+            )
+        else:
+            self.downsample_rate = round(
+                max(len(wav) for wav in paired_wavs) / features[0].size(1)
+            )
+            show(
+                f"[{self.__class__.__name__}] - Warning: The provided upstream does not give statis downsample rate"
+                ' by the "get_downsample_rates" interface (see upstream/example/expert.py).'
+                " The downsample rate is calculated dynamically basing on the shape of the"
+                f" input waveforms v.s. the output features: {self.downsample_rate}",
+                file=sys.stderr,
+            )
+
+        self.initT = kwargs.get("initT", 1.0)
+        self.turnT = kwargs.get("turnT", 0.1)
+        self.finalT = kwargs.get("finalT", 0.0001)
+
+        self.linear_num = kwargs.get("linear_num", 30000)
+        self.exp_period = kwargs.get("exp_period", 30000)
+
+        self.linear_step = (self.initT - self.turnT) / self.linear_num
+        self.exp_factor = math.pow(self.finalT / self.turnT, 1 / self.exp_period)
+
+        self.temp = nn.parameter.Parameter(torch.tensor(self.initT), requires_grad=False)
+
+        self.weights = nn.Parameter(torch.zeros(self.layer_num, self.output_dim))
+
+    def _select_feature(self, features):
+        feature = features.get(self.feature_selection)
+
+        if isinstance(feature, dict):
+            feature = list(feature.values())
+
+        if isinstance(feature, (list, tuple)) and len(feature) == 1:
+            feature = feature[0]
+
+        assert isinstance(feature, (list, tuple))
+
+        return feature
+
+    def _weighted_sum(self, features): # [L] (B, D)
+        stacked_feature = torch.stack(features, dim=1) # (B, L, D)
+        B, L, D = stacked_feature.shape
+
+        if self.normalize: # apply on the last dimension (D)
+            stacked_feature = F.layer_norm(stacked_feature, (D,))
+
+        norm_weights = self._get_norm_weights().unsqueeze(0) # (1, L, D)
+        weighted_feature = (norm_weights * stacked_feature).sum(dim=1) # (B, D)
+
+        return weighted_feature # (B, D)
 
     def _get_norm_weights(self):
-        log_probs = F.log_softmax(self.weights/self.temp, dim=-1)
-        gumbel_select = gumbel_softmax(log_probs, hard=True, dim=-1)
         if self.training:
-            return gumbel_select
+            # in training mode, use the gumbel softmax
+            log_probs = F.log_softmax(self.weights/self.temp, dim=0) # (L, D)
+            gumbel_select = gumbel_softmax(log_probs, hard=True, dim=0) # (L, D)
+            return gumbel_select # (L, D)
         else:
-            # in eval mode, use the argmax of gumbel softmax
-            _, max_idx = gumbel_select.max(dim=-1)
-            return F.one_hot(max_idx, num_classes=self.layer_num).float()
+            # in eval mode, use the argmax of weights
+            _, max_idx = self.weights.max(dim=0) # (D)
+            return F.one_hot(max_idx, num_classes=self.layer_num).float() # (L, D)
+
+    def get_feature_lens(self, wavs: List[Tensor]) -> List[int]:
+        def get_feature_len(wav: Tensor) -> int:
+            # the length is the integer smaller but closest to the ratio, even if exact division
+            return -(-(len(wav)) // self.downsample_rate) - 1
+        return [get_feature_len(wav) for wav in wavs]
+
+    def forward(
+        self,
+        paired_wavs: List[Tensor],
+        paired_features: Dict[str, Union[Tensor, List[Tensor], Dict[str, Tensor]]],
+    ) -> Tensor:
+        features = self._select_feature(paired_features)
+        features = self._weighted_sum(features)
+
+        f_lens = self.get_feature_lens(paired_wavs)
+        return tolist(f_lens, features)

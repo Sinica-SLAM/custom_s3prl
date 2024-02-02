@@ -143,12 +143,53 @@ class Featurizer(nn.Module):
 
 
 class AnnealSoftmax(Featurizer):
-    def __init__(self, upstream: UpstreamBase, feature_selection: str = "hidden_states", upstream_device: str = "cuda", layer_selection: int = None, normalize: bool = False, **kwargs):
-        super().__init__(upstream, feature_selection, upstream_device, layer_selection, normalize, **kwargs)
+    def __init__(
+        self,
+        upstream: UpstreamBase,
+        feature_selection: str = "hidden_states",
+        upstream_device: str = "cuda",
+        layer_selection: int = None,
+        normalize: bool = False,
+        **kwargs,
+    ):
+        super(Featurizer, self).__init__()
+
+        upstream.eval()
+        paired_wavs = [torch.randn(SAMPLE_RATE).to(upstream_device)]
+        with torch.no_grad():
+            paired_features = upstream(paired_wavs)
+
+        assert feature_selection is None or feature_selection == "hidden_states", f"{self.__class__.__name__} only support hidden_states feature selection"
+        assert layer_selection is None, f"{self.__class__.__name__} only support layer_selection is None"
+        self.feature_selection = "hidden_states"
+        self.layer_selection = None
+        self.normalize = normalize
+
+        features = self._select_feature(paired_features)
+        self.layer_num = len(features)
+        assert all(f.size(-1) == features[0].size(-1) for f in features), f"{self.__class__.__name__} only support the same feature dimension"
+        self.output_dim = features[0].size(-1)
+
+        if hasattr(upstream, "get_downsample_rates"):
+            self.downsample_rate = upstream.get_downsample_rates(feature_selection)
+            show(
+                f"[{self.__class__.__name__}] - The selected feature {feature_selection}'s downsample rate is {self.downsample_rate}",
+                file=sys.stderr,
+            )
+        else:
+            self.downsample_rate = round(
+                max(len(wav) for wav in paired_wavs) / features[0].size(1)
+            )
+            show(
+                f"[{self.__class__.__name__}] - Warning: The provided upstream does not give statis downsample rate"
+                ' by the "get_downsample_rates" interface (see upstream/example/expert.py).'
+                " The downsample rate is calculated dynamically basing on the shape of the"
+                f" input waveforms v.s. the output features: {self.downsample_rate}",
+                file=sys.stderr,
+            )
 
         self.init_temp(**kwargs)
-
-        assert feature_selection == "hidden_states" and layer_selection is None, f"{self.__class__.__name__} only support hidden_states feature selection and layer_selection is None"
+        self.init_weights()
 
     def init_temp(self, initT = 1.0, turnT = 0.1, finalT = 0.0001, linear_num = 30000, exp_period = 30000):
         self.initT = initT
@@ -161,6 +202,9 @@ class AnnealSoftmax(Featurizer):
         self.exp_factor = math.pow(self.finalT / self.turnT, 1 / self.exp_period)
 
         self.temp = nn.parameter.Parameter(torch.tensor(self.initT), requires_grad=False)
+
+    def init_weights(self):
+        self.weights = nn.parameter.Parameter(torch.zeros(self.layer_num)) # (L)
 
     def show(self):
         print(f"[{self.__class__.__name__}] - temp: {self.temp.item():.4f}")
@@ -220,53 +264,8 @@ class GumbelSoftmax2(AnnealSoftmax):
 
 
 class AnnealFusion(AnnealSoftmax):
-    def __init__(
-        self,
-        upstream: UpstreamBase,
-        feature_selection: str = "hidden_states",
-        upstream_device: str = "cuda",
-        layer_selection: int = None,
-        normalize: bool = False,
-        **kwargs,
-    ):
-        super(Featurizer, self).__init__()
-
-        upstream.eval()
-        paired_wavs = [torch.randn(SAMPLE_RATE).to(upstream_device)]
-        with torch.no_grad():
-            paired_features = upstream(paired_wavs)
-
-        assert feature_selection is None or feature_selection == "hidden_states", f"{self.__class__.__name__} only support hidden_states feature selection"
-        assert layer_selection is None, f"{self.__class__.__name__} only support layer_selection is None"
-        self.feature_selection = "hidden_states"
-        self.layer_selection = None
-        self.normalize = normalize
-
-        features = self._select_feature(paired_features)
-        self.layer_num = len(features)
-        assert all(f.size(-1) == features[0].size(-1) for f in features), f"{self.__class__.__name__} only support the same feature dimension"
-        self.output_dim = features[0].size(-1)
-
-        if hasattr(upstream, "get_downsample_rates"):
-            self.downsample_rate = upstream.get_downsample_rates(feature_selection)
-            show(
-                f"[{self.__class__.__name__}] - The selected feature {feature_selection}'s downsample rate is {self.downsample_rate}",
-                file=sys.stderr,
-            )
-        else:
-            self.downsample_rate = round(
-                max(len(wav) for wav in paired_wavs) / features[0].size(1)
-            )
-            show(
-                f"[{self.__class__.__name__}] - Warning: The provided upstream does not give statis downsample rate"
-                ' by the "get_downsample_rates" interface (see upstream/example/expert.py).'
-                " The downsample rate is calculated dynamically basing on the shape of the"
-                f" input waveforms v.s. the output features: {self.downsample_rate}",
-                file=sys.stderr,
-            )
-
-        self.init_temp(**kwargs)
-        self.weights = nn.parameter.Parameter(torch.zeros(self.layer_num, self.output_dim))
+    def init_weights(self):
+        self.weights = nn.parameter.Parameter(torch.zeros(self.layer_num, self.output_dim)) # (L, D)
 
     def _weighted_sum(self, features): # [L] (B, T, D)
         stacked_feature = torch.stack(features, dim=0) # (L, B, T, D)
@@ -290,12 +289,6 @@ class AnnealFusion(AnnealSoftmax):
         # in eval mode, use the argmax of weights
         _, max_idx = self.weights.max(dim=0) # (D)
         return F.one_hot(max_idx, num_classes=self.layer_num).T.float() # (L, D)
-
-    def _get_norm_weights(self):
-        if self.training:
-            return self._get_train_norm_weights()
-        else:
-            return self._get_eval_norm_weights()
 
 
 class GumbelFusion(AnnealFusion):

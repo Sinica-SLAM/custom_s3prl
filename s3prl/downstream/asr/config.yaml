@@ -22,7 +22,10 @@ featurizer_conf:
     linear_num: 1000
     exp_period: 10000
   GumbelSoftmax: *AnnealSoftmax
+  GumbelSoftmax2: *AnnealSoftmax
+  AnnealFusion: *AnnealSoftmax
   GumbelFusion: *AnnealSoftmax
+  GumbelFusion2: *AnnealSoftmax
 
 fusioner_conf:
   lambda_sum:
@@ -76,7 +79,7 @@ downstream_expert:
     num_workers: 4
     batch_size: 16
     eval_batch_size: 1
-    libri_root: './data/LibriSpeech'
+    libri_root: './data/librispeech'
     bucket_file: './data/len_for_bucket'
     dict_path: "./downstream/asr/char.dict"
 

@@ -22,6 +22,7 @@ featurizer_conf:
     linear_num: 1000
     exp_period: 10000
   GumbelSoftmax: *AnnealSoftmax
+  GumbelFusion: *AnnealSoftmax
 
 fusioner_conf:
   lambda_sum:

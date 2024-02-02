@@ -255,7 +255,7 @@ class GumbelFusion(AnnealSoftmax):
         self.weights = nn.parameter.Parameter(torch.zeros(self.layer_num, self.output_dim))
 
     def _weighted_sum(self, features): # [L] (B, T, D)
-        stacked_feature = torch.stack(features, dim=-1) # (L, B, T, D)
+        stacked_feature = torch.stack(features, dim=0) # (L, B, T, D)
         L, B, T, D = stacked_feature.shape
 
         if self.normalize: # apply on the last dimension (D)

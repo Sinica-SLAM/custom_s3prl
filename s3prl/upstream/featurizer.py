@@ -165,8 +165,20 @@ class AnnealSoftmax(Featurizer):
     def show(self):
         print(f"[{self.__class__.__name__}] - temp: {self.temp.item():.4f}")
 
+    def _get_train_norm_weights(self):
+        # in training mode, use softmax
+        return F.softmax(self.weights/self.temp, dim=-1) # (L)
+
+    def _get_eval_norm_weights(self):
+        # in eval mode, use the argmax of weights
+        _, max_idx = self.weights.max(dim=-1)
+        return F.one_hot(max_idx, num_classes=self.layer_num).float() # (L)
+
     def _get_norm_weights(self):
-        return F.softmax(self.weights/self.temp, dim=-1)
+        if self.training:
+            return self._get_train_norm_weights()
+        else:
+            return self._get_eval_norm_weights()
 
     def _weighted_sum(self, feature): # [L] (B, T, D)
         stacked_feature = torch.stack(feature, dim=0) # (L, B, T, D)
@@ -193,19 +205,21 @@ class AnnealSoftmax(Featurizer):
 
 
 class GumbelSoftmax(AnnealSoftmax):
-    def _get_norm_weights(self):
-        if self.training:
-            # in training mode, use the gumbel softmax
-            log_probs = F.log_softmax(self.weights/self.temp, dim=-1) # (L)
-            gumbel_select = gumbel_softmax(log_probs, hard=True, dim=-1) # (L)
-            return gumbel_select # (L)
-        else:
-            # in eval mode, use the argmax of weights
-            _, max_idx = self.weights.max(dim=-1) # (L)
-            return F.one_hot(max_idx, num_classes=self.layer_num).float() # (L)
+    def _get_train_norm_weights(self):
+        # in training mode, use the gumbel softmax
+        log_probs = F.log_softmax(self.weights/self.temp, dim=-1) # (L)
+        gumbel_select = gumbel_softmax(log_probs, hard=True, dim=-1) # (L)
+        return gumbel_select # (L)
 
 
-class GumbelFusion(AnnealSoftmax):
+class GumbelSoftmax2(AnnealSoftmax):
+    def _get_train_norm_weights(self):
+        # in training mode, use the gumbel softmax
+        return gumbel_softmax(self.weights, tau=self.temp, hard=True, dim=-1) # (L)
+
+
+
+class AnnealFusion(AnnealSoftmax):
     def __init__(
         self,
         upstream: UpstreamBase,
@@ -268,15 +282,32 @@ class GumbelFusion(AnnealSoftmax):
 
         return weighted_feature # (B, T, D)
 
+    def _get_train_norm_weights(self):
+        # in training mode, use softmax
+        return F.softmax(self.weights/self.temp, dim=0) # (L, D)
+
+    def _get_eval_norm_weights(self):
+        # in eval mode, use the argmax of weights
+        _, max_idx = self.weights.max(dim=0) # (D)
+        return F.one_hot(max_idx, num_classes=self.layer_num).T.float() # (L, D)
+
     def _get_norm_weights(self):
         if self.training:
-            # in training mode, use the gumbel softmax
-            log_probs = F.log_softmax(self.weights/self.temp, dim=0) # (L, D)
-            gumbel_select = gumbel_softmax(log_probs, hard=True, dim=0) # (L, D)
-            return gumbel_select # (L, D)
+            return self._get_train_norm_weights()
         else:
-            # in eval mode, use the argmax of weights
-            _, max_idx = self.weights.max(dim=0) # (D)
-            max_select = F.one_hot(max_idx, num_classes=self.layer_num).float() # (D, L)
-            return max_select.T # (L, D)
+            return self._get_eval_norm_weights()
+
+
+class GumbelFusion(AnnealFusion):
+    def _get_train_norm_weights(self):
+        # in training mode, use the gumbel softmax
+        log_probs = F.log_softmax(self.weights/self.temp, dim=0) # (L, D)
+        gumbel_select = gumbel_softmax(log_probs, hard=True, dim=0) # (L, D)
+        return gumbel_select # (L, D)
+
+
+class GumbelFusion2(AnnealFusion):
+    def _get_train_norm_weights(self):
+        # in training mode, use the gumbel softmax
+        return gumbel_softmax(self.weights, tau=self.temp, hard=True, dim=0) # (L, D)
 

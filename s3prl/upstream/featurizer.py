@@ -207,7 +207,7 @@ class AnnealSoftmax(Featurizer):
         self.weights = nn.parameter.Parameter(torch.zeros(self.layer_num)) # (L)
 
     def show(self):
-        print(f"[{self.__class__.__name__}] - temp: {self.temp.item():.4f}")
+        print(f"[{self.__class__.__name__}] - temp: {self.temp.item():.6f}")
 
     def _get_train_norm_weights(self):
         # in training mode, use softmax

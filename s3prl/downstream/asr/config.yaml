@@ -22,10 +22,15 @@ featurizer_conf:
     linear_num: 1000
     exp_period: 10000
   GumbelSoftmax: *AnnealSoftmax
-  GumbelSoftmax2: *AnnealSoftmax
+  GumbelSoftmax2: &AnnealSoftmax2
+    initT: 1.0
+    turnT: 0.1
+    finalT: 0.000001
+    linear_num: 1000
+    exp_period: 10000
   AnnealFusion: *AnnealSoftmax
   GumbelFusion: *AnnealSoftmax
-  GumbelFusion2: *AnnealSoftmax
+  GumbelFusion2: *AnnealSoftmax2
 
 fusioner_conf:
   lambda_sum:

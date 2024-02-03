@@ -259,7 +259,7 @@ class GumbelSoftmax(AnnealSoftmax):
 class GumbelSoftmax2(AnnealSoftmax):
     def _get_train_norm_weights(self):
         # in training mode, use the gumbel softmax
-        return gumbel_softmax(self.weights, tau=self.temp, hard=True, dim=-1) # (L)
+        return gumbel_softmax(self.weights/self.temp, hard=True, dim=-1) # (L)
 
 
 
@@ -302,5 +302,5 @@ class GumbelFusion(AnnealFusion):
 class GumbelFusion2(AnnealFusion):
     def _get_train_norm_weights(self):
         # in training mode, use the gumbel softmax
-        return gumbel_softmax(self.weights, tau=self.temp, hard=True, dim=0) # (L, D)
+        return gumbel_softmax(self.weights/self.temp, hard=True, dim=0) # (L, D)
 

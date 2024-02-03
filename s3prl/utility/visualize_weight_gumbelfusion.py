@@ -39,7 +39,7 @@ ckpt = torch.load(args.ckpt, map_location='cpu')
 print('ckpt: ', list(ckpt.keys()))
 weights = ckpt['Featurizer']['weights'].double() # (L, D)
 temp = ckpt['Featurizer'].get('temp') or 1.0
-print(f"Temperature: {temp.item() :0.6f}")
+print(f"Temperature: {temp.item()}")
 
 # compute the layer selection counts
 selects = weights.argmax(dim=0) # (D)

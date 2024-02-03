@@ -48,14 +48,14 @@ if ifeaturizer1 := ckpt.get('iFeaturizer1'):
     weights1 = ifeaturizer1['weights'].double()
     if temp1 := ifeaturizer1.get('temp'):
         weights1 /= temp1
-        print(f'Temperature1: {temp1.item():.6f}')
+        print(f'Temperature1: {temp1.item()}')
     norm_weights1 = F.softmax(weights1, dim=-1)
     print('Normalized weights of upstream1: \n', norm_weights1)
 if ifeaturizer2 := ckpt.get('iFeaturizer2'):
     weights2 = ifeaturizer2['weights'].double()
     if temp2 := ifeaturizer2.get('temp'):
         weights2 /= temp2
-        print(f'Temperature2: {temp2.item():.6f}')
+        print(f'Temperature2: {temp2.item()}')
     norm_weights2 = F.softmax(weights2, dim=-1)
     print('Normalized weights of upstream2: \n', norm_weights2)
 
@@ -71,7 +71,7 @@ if fusioner := ckpt.get('Fusioner'):
     if gate_values is not None:
         if temp := fusioner.get('temp'):
             #gate_values /= temp
-            print(f'Temperature: {temp.item():.4f}')
+            print(f'Temperature: {temp.item()}')
         gates = torch.sigmoid(gate_values).tolist()
         gates = list(enumerate(gates))
         gates.sort(key=lambda x: x[1])

@@ -39,7 +39,7 @@ ckpt = torch.load(args.ckpt, map_location='cpu')
 print('ckpt: ', list(ckpt.keys()))
 weights = ckpt['Featurizer']['weights'].double()
 temp = ckpt['Featurizer'].get('temp') or 1.0
-print(f"Temperature: {temp.item() :0.6f}")
+print(f"Temperature: {temp.item()}")
 origin_probs = F.softmax(weights, dim=-1)
 probs = F.softmax(weights/temp, dim=-1)
 

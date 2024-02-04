@@ -21,6 +21,12 @@ featurizer_conf:
     finalT: 0.0001
     linear_num: 1000
     exp_period: 10000
+  FixedSoftmax: &FixedSoftmax
+    initT: 0.0001
+    turnT: 0.0001
+    finalT: 0.0001
+    linear_num: 1
+    exp_period: 1
   GumbelSoftmax: *AnnealSoftmax
   GumbelSoftmax2: *AnnealSoftmax
   AnnealFusion: *AnnealSoftmax

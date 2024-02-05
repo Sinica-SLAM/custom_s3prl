@@ -50,14 +50,20 @@ if ifeaturizer1 := ckpt.get('iFeaturizer1'):
         weights1 /= temp1
         print(f'Temperature1: {temp1.item()}')
     norm_weights1 = F.softmax(weights1, dim=-1)
-    print('Normalized weights of upstream1: \n', norm_weights1)
+    norm_weights1 = norm_weights1.cpu().tolist()
+    print('Normalized weights of upstream1:')
+    for i, w in enumerate(norm_weights1):
+        print(f'Layer {i}: {w}')
 if ifeaturizer2 := ckpt.get('iFeaturizer2'):
     weights2 = ifeaturizer2['weights'].double()
     if temp2 := ifeaturizer2.get('temp'):
         weights2 /= temp2
         print(f'Temperature2: {temp2.item()}')
     norm_weights2 = F.softmax(weights2, dim=-1)
-    print('Normalized weights of upstream2: \n', norm_weights2)
+    norm_weights2 = norm_weights2.cpu().tolist()
+    print('Normalized weights of upstream2:')
+    for i, w in enumerate(norm_weights2):
+        print(f'Layer {i}: {w}')
 
 if fusioner := ckpt.get('Fusioner'):
     if lamb := fusioner.get('lamb'):
@@ -85,9 +91,6 @@ if fusioner := ckpt.get('Fusioner'):
             else:
                 gate2 += 1
         print(f'Gate1: {gate1}, Gate2: {gate2}')
-norm_weights1 = norm_weights1.cpu().tolist() if norm_weights1 is not None else None
-norm_weights2 = norm_weights2.cpu().tolist() if norm_weights2 is not None else None
-
 
 
 # plot weights

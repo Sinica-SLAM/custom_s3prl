@@ -46,9 +46,12 @@ probs = F.softmax(weights/temp, dim=-1)
 weights = weights.cpu().tolist()
 origin_probs = origin_probs.cpu().tolist()
 probs = probs.cpu().tolist()
-print('Weights: \n', weights)
-print('Origin Probs: \n', origin_probs)
-print('Probs: \n', probs)
+print('Weights:')
+for i, w in enumerate(weights):
+    print(f'Layer {i}: {w}')
+print('Probs:')
+for i, p in enumerate(probs):
+    print(f'Layer {i}: {p}')
 
 # plot weights
 x = range(0, len(probs))

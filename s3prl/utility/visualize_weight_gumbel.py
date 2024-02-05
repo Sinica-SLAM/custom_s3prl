@@ -36,22 +36,23 @@ else:
     os.makedirs(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-print('ckpt: ', list(ckpt.keys()))
-weights = ckpt['Featurizer']['weights'].double()
-temp = ckpt['Featurizer'].get('temp') or 1.0
-print(f"Temperature: {temp.item()}")
+print('Check point: ', list(ckpt.keys()))
+featurizer = ckpt['Featurizer']
+weights = featurizer['weights'].double() # (L)
 origin_probs = F.softmax(weights, dim=-1)
-probs = F.softmax(weights/temp, dim=-1)
+if temp := featurizer.get('temp'):
+    weights /= temp
+    print(f'Temperature1: {temp.item()}')
+probs = F.softmax(weights, dim=-1)
+std = probs.std(dim=0, correction=0)
+std = std / F.one_hot(probs.argmax(), num_classes=probs.size(0)).float().std(dim=0, correction=0)
 
-weights = weights.cpu().tolist()
 origin_probs = origin_probs.cpu().tolist()
 probs = probs.cpu().tolist()
-print('Weights:')
-for i, w in enumerate(weights):
-    print(f'Layer {i}: {w}')
 print('Probs:')
 for i, p in enumerate(probs):
-    print(f'Layer {i}: {p}')
+    print(f'\tLayer {i:>2}: {p}')
+print(f'Anneal ratio: {std.cpu().item():0.4f}')
 
 # plot weights
 x = range(0, len(probs))

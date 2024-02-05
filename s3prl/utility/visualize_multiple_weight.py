@@ -42,37 +42,44 @@ else:
 ckpt = torch.load(args.ckpt, map_location='cpu')
 print('Check point: ', list(ckpt.keys()))
 
-norm_weights1 = None
-norm_weights2 = None
+prob1 = None
+prob2 = None
 if ifeaturizer1 := ckpt.get('iFeaturizer1'):
     weights1 = ifeaturizer1['weights'].double()
     if temp1 := ifeaturizer1.get('temp'):
         weights1 /= temp1
         print(f'Temperature1: {temp1.item()}')
-    norm_weights1 = F.softmax(weights1, dim=-1)
-    norm_weights1 = norm_weights1.cpu().tolist()
+    prob1 = F.softmax(weights1, dim=-1)
+    std = prob1.std(dim=0, correction=0)
+    std = std / F.one_hot(prob1.argmax(), num_classes=prob1.size(0)).float().std(dim=0, correction=0)
+    prob1 = prob1.cpu().tolist()
     print('Normalized weights of upstream1:')
-    for i, w in enumerate(norm_weights1):
-        print(f'Layer {i}: {w}')
+    for i, w in enumerate(prob1):
+        print(f'\tLayer {i:>2}: {w}')
+    print(f'Upstream1 anneal ratio: {std.cpu().item():0.4f}')
+    print('') # print a new line
 if ifeaturizer2 := ckpt.get('iFeaturizer2'):
     weights2 = ifeaturizer2['weights'].double()
     if temp2 := ifeaturizer2.get('temp'):
         weights2 /= temp2
         print(f'Temperature2: {temp2.item()}')
-    norm_weights2 = F.softmax(weights2, dim=-1)
-    norm_weights2 = norm_weights2.cpu().tolist()
+    prob2 = F.softmax(weights2, dim=-1)
+    std = prob2.std(dim=0, correction=0)
+    std = std / F.one_hot(prob2.argmax(), num_classes=prob2.size(0)).float().std(dim=0, correction=0)
+    prob2 = prob2.cpu().tolist()
     print('Normalized weights of upstream2:')
-    for i, w in enumerate(norm_weights2):
-        print(f'Layer {i}: {w}')
+    for i, w in enumerate(prob2):
+        print(f'\tLayer {i:>2}: {w}')
+    print(f'Upstream2 anneal ratio: {std.cpu().item():0.4f}')
 
 if fusioner := ckpt.get('Fusioner'):
     if lamb := fusioner.get('lamb'):
         true_lamb = torch.sigmoid(lamb).item()
         print('Lambda: ', true_lamb)
-        if norm_weights1 is not None:
-            norm_weights1 *= true_lamb
-        if norm_weights2 is not None:
-            norm_weights2 *= (1-true_lamb)
+        if prob1 is not None:
+            prob1 *= true_lamb
+        if prob2 is not None:
+            prob2 *= (1-true_lamb)
     gate_values = fusioner.get('gate_values')
     if gate_values is not None:
         if temp := fusioner.get('temp'):
@@ -94,14 +101,14 @@ if fusioner := ckpt.get('Fusioner'):
 
 
 # plot weights
-if norm_weights1 or norm_weights2:
+if prob1 or prob2:
     upstream1 = args.upstream1
     upstream2 = args.upstream2
-    x = range(0, len(norm_weights1 or norm_weights2))
-    if norm_weights1 is not None:
-        plt.bar(x, norm_weights1, 0.3, align='edge', color='deepskyblue')
-    if norm_weights2 is not None:
-        plt.bar(x, norm_weights2, -0.3, align='edge', color='orange')
+    x = range(0, len(prob1 or prob2))
+    if prob1 is not None:
+        plt.bar(x, prob1, 0.3, align='edge', color='deepskyblue')
+    if prob2 is not None:
+        plt.bar(x, prob2, -0.3, align='edge', color='orange')
     # set xticks and ylim
     plt.xticks(x, x)
     # plt.ylim(0, 0.4)

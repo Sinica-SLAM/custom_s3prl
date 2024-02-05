@@ -36,23 +36,27 @@ else:
     os.makedirs(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-print('ckpt: ', list(ckpt.keys()))
-weights = ckpt['Featurizer']['weights'].double() # (L, D)
-temp = ckpt['Featurizer'].get('temp') or 1.0
-print(f"Temperature: {temp.item()}")
+print('Check point: ', list(ckpt.keys()))
+featurizer = ckpt['Featurizer']
+weights = featurizer['weights'].double() # (L, D)
+if temp := featurizer.get('temp'):
+    weights /= temp
+    print(f'Temperature1: {temp.item()}')
+
 
 # compute the layer selection counts
 selects = weights.argmax(dim=0) # (D)
 counts = torch.bincount(selects, minlength=weights.size(0)) # (L)
 print('Layer selection counts: ')
 for i, count in enumerate(counts):
-    print(f"Layer {i}: {count.item(): 3d}")
+    print(f"\tLayer {i:>2}: {count.item(): 3d}")
 
 # compute the average variance of all dimension
-anneal_weights = F.softmax(weights/temp, dim=0) # (L, D), which is the probability distribution against layer of each dimension
-standard_deviations = anneal_weights.std(dim=0, correction=0) # (D)
-print(f'Average standard deviations: {standard_deviations.mean().item(): 0.4f}')
-print(f'Max standard deviations: {standard_deviations.max().item(): 0.4f} at dim {standard_deviations.argmax().item()}')
+probs = F.softmax(weights, dim=0)  # (L, D)
+stds = probs.std(dim=0, correction=0) # (D)
+stds = stds / F.one_hot(torch.tensor(0), num_classes=probs.size(0)).float().std(dim=0, correction=0)
+print(f'Average anneal ratio: {stds.mean().item(): 0.4f}')
+print(f'Max anneal ratio: {stds.max().item(): 0.4f} at dim {stds.argmax().item()}')
 
 # plot weights
 x = range(0, len(counts))

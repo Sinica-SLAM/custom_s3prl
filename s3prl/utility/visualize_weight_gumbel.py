@@ -36,7 +36,7 @@ else:
     os.makedirs(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-print('Check point: ', list(ckpt.keys()))
+print(f"Step: {ckpt['Step']}")
 featurizer = ckpt['Featurizer']
 weights = featurizer['weights'].double() # (L)
 origin_probs = F.softmax(weights, dim=-1)

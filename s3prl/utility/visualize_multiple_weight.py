@@ -40,7 +40,7 @@ else:
     os.makedirs(args.out_dir, exist_ok=True)
 
 ckpt = torch.load(args.ckpt, map_location='cpu')
-print('Check point: ', list(ckpt.keys()))
+print(f"Step: {ckpt['Step']}")
 
 prob1 = None
 prob2 = None

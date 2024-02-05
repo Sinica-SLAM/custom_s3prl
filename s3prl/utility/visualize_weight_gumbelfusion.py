@@ -50,10 +50,7 @@ for i, count in enumerate(counts):
 
 # compute the average variance of all dimension
 anneal_weights = F.softmax(weights/temp, dim=0) # (L, D), which is the probability distribution against layer of each dimension
-layers = torch.arange(0, weights.size(0)).double().unsqueeze(-1) # (L, 1)
-square_means = (anneal_weights * layers.pow(2)).sum(dim=0) # (D)
-mean_squares = (anneal_weights * layers).sum(dim=0).pow(2) # (D)
-standard_deviations = (square_means - mean_squares + 1e-10).sqrt() # (D)
+standard_deviations = anneal_weights.std(dim=0, correction=0) # (D)
 print(f'Average standard deviations: {standard_deviations.mean().item(): 0.4f}')
 print(f'Max standard deviations: {standard_deviations.max().item(): 0.4f} at dim {standard_deviations.argmax().item()}')
 

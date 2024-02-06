@@ -201,7 +201,7 @@ class AnnealSoftmax(Featurizer):
         self.linear_step = (self.initT - self.turnT) / self.linear_num
         self.exp_factor = math.pow(self.finalT / self.turnT, 1 / self.exp_period)
 
-        self.temp = nn.parameter.Parameter(torch.tensor(self.initT), requires_grad=False)
+        self.temp = nn.parameter.Parameter(torch.tensor(self.initT, dtype=torch.float32), requires_grad=False)
 
     def init_weights(self):
         self.weights = nn.parameter.Parameter(torch.zeros(self.layer_num)) # (L)

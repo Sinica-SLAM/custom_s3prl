@@ -72,8 +72,8 @@ if __name__ == '__main__':
     parser.add_argument('--out_dir', type=str, default='', required=False)
     parser.add_argument('-u1', '--upstream1', help='upstream1 in run_downstream', type=str, required=True)
     parser.add_argument('-u2', '--upstream2', help='upstream2 in run_downstream', type=str, required=True)
-    parser.add_argument('-F1', help="The the first upstream's featurizer", type=str)
-    parser.add_argument('-F2', help="The the second upstream's featurizer", type=str)
+    parser.add_argument('-F1', help="The the first upstream's featurizer", default="", type=str)
+    parser.add_argument('-F2', help="The the second upstream's featurizer", default="", type=str)
     args = parser.parse_args()
 
     assert os.path.isfile(

@@ -27,12 +27,12 @@ def visualize_multiple_weight(ckpt, F1, F2):
     if 'gumbelfusion' in F1.lower():
         prob1 = visualize_weight_gumbelfusion(ckpt['iFeaturizer1'])
     else:
-        _, prob1 = visualize_weight_gumbel(ckpt['ifeaturizer1'])
+        _, prob1 = visualize_weight_gumbel(ckpt['iFeaturizer1'])
     print('')
     if 'gumbelfusion' in F2.lower():
         prob2 = visualize_weight_gumbelfusion(ckpt['iFeaturizer2'])
     else:
-        _, prob2 = visualize_weight_gumbel(ckpt['ifeaturizer2'])
+        _, prob2 = visualize_weight_gumbel(ckpt['iFeaturizer2'])
 
     if fusioner := ckpt.get('Fusioner'):
         if lamb := fusioner.get('lamb'):

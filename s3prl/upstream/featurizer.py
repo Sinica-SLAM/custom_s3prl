@@ -304,3 +304,10 @@ class GumbelFusion2(AnnealFusion):
         # in training mode, use the gumbel softmax
         return gumbel_softmax(self.weights/self.temp, hard=True, dim=0) # (L, D)
 
+
+class GumbelFusion3(AnnealFusion):
+    def _get_train_norm_weights(self):
+        return gumbel_softmax(self.weights, tau=self.temp, hard=False, dim=0) # (L, D)
+
+    def _get_eval_norm_weights(self):
+        return F.softmax(self.weights/self.temp, dim=0) # (L, D)

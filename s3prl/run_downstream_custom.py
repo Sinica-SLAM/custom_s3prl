@@ -1,129 +1,272 @@
-import os
-import yaml
-import glob
-import torch
-import random
 import argparse
+import glob
 import logging
-import torchaudio
-import numpy as np
+import os
+import random
 from argparse import Namespace
-from torch.distributed import is_initialized, get_world_size
+
+import numpy as np
+import torch
+import torchaudio
+import yaml
+from huggingface_hub import HfApi, HfFolder
+from torch.distributed import get_world_size, is_initialized
 
 from s3prl import hub
-from s3prl.downstream.runner_cache import RunnerCache
+from s3prl.downstream.runner import Runner
 from s3prl.downstream.runner_fusion import RunnerFusion
-from s3prl.utility.helper import backup, get_time_tag, hack_isinstance, is_leader_process, override
+from s3prl.utility.helper import (
+    backup,
+    get_time_tag,
+    hack_isinstance,
+    is_leader_process,
+    override,
+)
 
-from huggingface_hub import HfApi, HfFolder
 
 def get_downstream_args():
     parser = argparse.ArgumentParser()
 
     # train or test for this experiment
-    parser.add_argument('-m', '--mode', choices=['train', 'evaluate', 'inference'], required=True)
-    parser.add_argument('-t', '--evaluate_split', default='test')
-    parser.add_argument('-o', '--override', help='Used to override args and config, this is at the highest priority')
+    parser.add_argument(
+        "-m", "--mode", choices=["train", "evaluate", "inference"], required=True
+    )
+    parser.add_argument("-t", "--evaluate_split", default="test")
+    parser.add_argument(
+        "-o",
+        "--override",
+        help="Used to override args and config, this is at the highest priority",
+    )
 
     # distributed training
-    parser.add_argument('--backend', default='nccl', help='The backend for distributed training')
-    parser.add_argument('--local-rank', type=int,
-                        help=f'The GPU id this process should use while distributed training. \
-                               None when not launched by torch.distributed.launch')
+    parser.add_argument(
+        "--backend", default="nccl", help="The backend for distributed training"
+    )
+    parser.add_argument(
+        "--local-rank",
+        type=int,
+        help=f"The GPU id this process should use while distributed training. \
+                               None when not launched by torch.distributed.launch",
+    )
 
     # use a ckpt as the experiment initialization
     # if set, all the args and config below this line will be overwrited by the ckpt
     # if a directory is specified, the latest ckpt will be used by default
-    parser.add_argument('-e', '--past_exp', metavar='{CKPT_PATH,CKPT_DIR}', help='Resume training from a checkpoint')
+    parser.add_argument(
+        "-e",
+        "--past_exp",
+        metavar="{CKPT_PATH,CKPT_DIR}",
+        help="Resume training from a checkpoint",
+    )
 
     # only load the parameters in the checkpoint without overwriting arguments and config, this is for evaluation
-    parser.add_argument('-i', '--init_ckpt', metavar='CKPT_PATH', help='Load the checkpoint for evaluation')
+    parser.add_argument(
+        "-i",
+        "--init_ckpt",
+        metavar="CKPT_PATH",
+        help="Load the checkpoint for evaluation",
+    )
 
     # configuration for the experiment, including runner and downstream
-    parser.add_argument('-c', '--config', help='The yaml file for configuring the whole experiment except the upstream model')
+    parser.add_argument(
+        "-c",
+        "--config",
+        help="The yaml file for configuring the whole experiment except the upstream model",
+    )
 
     # downstream settings
-    parser.add_argument('-d', '--downstream', help='\
+    parser.add_argument(
+        "-d",
+        "--downstream",
+        help="\
         Typically downstream dataset need manual preparation.\
-        Please check downstream/README.md for details'
+        Please check downstream/README.md for details",
     )
-    parser.add_argument('-v', '--downstream_variant', help='Downstream vairants given the same expert')
+    parser.add_argument(
+        "-v", "--downstream_variant", help="Downstream vairants given the same expert"
+    )
 
     # upstream settings
-    parser.add_argument('--hub', default="torch", choices=["torch", "huggingface"],
-        help='The model Hub used to retrieve the upstream model.')
-
-    upstreams = [attr for attr in dir(hub) if attr[0] != '_']
-    parser.add_argument('-u', '--upstream',  help=""
-        'Upstreams with \"_local\" or \"_url\" postfix need local ckpt (-k) or config file (-g). '
-        'Other upstreams download two files on-the-fly and cache them, so just -u is enough and -k/-g are not needed. '
-        'Please check upstream/README.md for details. '
-        f"Available options in S3PRL: {upstreams}. "
+    parser.add_argument(
+        "--hub",
+        default="torch",
+        choices=["torch", "huggingface"],
+        help="The model Hub used to retrieve the upstream model.",
     )
-    parser.add_argument('-u1', '--upstream1',  help="same as upstream")
-    parser.add_argument('-u2', '--upstream2',  help="same as upstream")
 
-    parser.add_argument('-k', '--upstream_ckpt', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='Only set when the specified upstream need it')
-    parser.add_argument('-g', '--upstream_model_config', help='The config file for constructing the pretrained model')
-    parser.add_argument('-k1', '--upstream_ckpt1', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='Only set when the specified upstream need it')
-    parser.add_argument('-k2', '--upstream_ckpt2', metavar='{PATH,URL,GOOGLE_DRIVE_ID}', help='same as upstream_ckpt1')
-    parser.add_argument('-r', '--upstream_refresh', action='store_true', help='Re-download cached ckpts for on-the-fly upstream variants')
-    parser.add_argument('-f', '--upstream_trainable', action='store_true', help='Fine-tune, set upstream.train(). Default is upstream.eval()')
-    parser.add_argument('-f1', '--upstream_trainable1', action='store_true', help='Fine-tune, set upstream.train(). Default is upstream.eval()')
-    parser.add_argument('-f2', '--upstream_trainable2', action='store_true', help='same as upstream_trainable')
-    parser.add_argument('-s', '--upstream_feature_selection', default='hidden_states', help='Specify the layer to be extracted as the representation')
-    parser.add_argument('-s1', '--upstream1_feature_selection', default='hidden_states', help='Specify the layer to be extracted as the representation')
-    parser.add_argument('-s2', '--upstream2_feature_selection', default='hidden_states', help='same as upstream_feature_selection1')
-    parser.add_argument('-l', '--upstream_layer_selection', type=int, help='Select a specific layer for the features selected by -s')
-    parser.add_argument('-l1', '--upstream1_layer_selection', type=int, help='Select a specific layer for the features selected by -s1')
-    parser.add_argument('-l2', '--upstream2_layer_selection', type=int, help='same as upstream1_layer_selection')
-    parser.add_argument('-fs','--fusioner', help='Specify the fusion method for the two upstreams')
-    parser.add_argument('--upstream_feature_normalize', action='store_true', help='Specify whether to normalize hidden features before weighted sum')
-    parser.add_argument('-C', '--use_cache', action='store_true', help='Cache upstream features on disk to speed up experiments')
-    parser.add_argument('-F', '--featurizer', default='Featurizer', help='Specify the featurizer for the upstream')
-    parser.add_argument('-F1', '--ifeaturizer1', default='Featurizer', help='Specify the featurizer for the upstream1')
-    parser.add_argument('-F2', '--ifeaturizer2', default='Featurizer', help='Specify the featurizer for the upstream2')
-    parser.add_argument('-M', '--cache_ram_ratio', type=float, help='Ratio of RAM to use for caching upstream features')
+    upstreams = [attr for attr in dir(hub) if attr[0] != "_"]
+    parser.add_argument(
+        "-u",
+        "--upstream",
+        help=""
+        'Upstreams with "_local" or "_url" postfix need local ckpt (-k) or config file (-g). '
+        "Other upstreams download two files on-the-fly and cache them, so just -u is enough and -k/-g are not needed. "
+        "Please check upstream/README.md for details. "
+        f"Available options in S3PRL: {upstreams}. ",
+    )
+    parser.add_argument("-u1", "--upstream1", help="same as upstream")
+    parser.add_argument("-u2", "--upstream2", help="same as upstream")
+
+    parser.add_argument(
+        "-k",
+        "--upstream_ckpt",
+        metavar="{PATH,URL,GOOGLE_DRIVE_ID}",
+        help="Only set when the specified upstream need it",
+    )
+    parser.add_argument(
+        "-g",
+        "--upstream_model_config",
+        help="The config file for constructing the pretrained model",
+    )
+    parser.add_argument(
+        "-k1",
+        "--upstream_ckpt1",
+        metavar="{PATH,URL,GOOGLE_DRIVE_ID}",
+        help="Only set when the specified upstream need it",
+    )
+    parser.add_argument(
+        "-k2",
+        "--upstream_ckpt2",
+        metavar="{PATH,URL,GOOGLE_DRIVE_ID}",
+        help="same as upstream_ckpt1",
+    )
+    parser.add_argument(
+        "-r",
+        "--upstream_refresh",
+        action="store_true",
+        help="Re-download cached ckpts for on-the-fly upstream variants",
+    )
+    parser.add_argument(
+        "-f",
+        "--upstream_trainable",
+        action="store_true",
+        help="Fine-tune, set upstream.train(). Default is upstream.eval()",
+    )
+    parser.add_argument(
+        "-f1",
+        "--upstream_trainable1",
+        action="store_true",
+        help="Fine-tune, set upstream.train(). Default is upstream.eval()",
+    )
+    parser.add_argument(
+        "-f2",
+        "--upstream_trainable2",
+        action="store_true",
+        help="same as upstream_trainable",
+    )
+    parser.add_argument(
+        "-s",
+        "--upstream_feature_selection",
+        default="hidden_states",
+        help="Specify the layer to be extracted as the representation",
+    )
+    parser.add_argument(
+        "-s1",
+        "--upstream1_feature_selection",
+        default="hidden_states",
+        help="Specify the layer to be extracted as the representation",
+    )
+    parser.add_argument(
+        "-s2",
+        "--upstream2_feature_selection",
+        default="hidden_states",
+        help="same as upstream_feature_selection1",
+    )
+    parser.add_argument(
+        "-l",
+        "--upstream_layer_selection",
+        type=int,
+        help="Select a specific layer for the features selected by -s",
+    )
+    parser.add_argument(
+        "-l1",
+        "--upstream1_layer_selection",
+        type=int,
+        help="Select a specific layer for the features selected by -s1",
+    )
+    parser.add_argument(
+        "-l2",
+        "--upstream2_layer_selection",
+        type=int,
+        help="same as upstream1_layer_selection",
+    )
+    parser.add_argument(
+        "-fs", "--fusioner", help="Specify the fusion method for the two upstreams"
+    )
+    parser.add_argument(
+        "--upstream_feature_normalize",
+        action="store_true",
+        help="Specify whether to normalize hidden features before weighted sum",
+    )
+    parser.add_argument(
+        "-F",
+        "--featurizer",
+        default="Featurizer",
+        help="Specify the featurizer for the upstream",
+    )
+    parser.add_argument(
+        "-F1",
+        "--ifeaturizer1",
+        default="Featurizer",
+        help="Specify the featurizer for the upstream1",
+    )
+    parser.add_argument(
+        "-F2",
+        "--ifeaturizer2",
+        default="Featurizer",
+        help="Specify the featurizer for the upstream2",
+    )
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream
-    parser.add_argument('-n', '--expname', help='Save experiment at result/downstream/expname')
-    parser.add_argument('-p', '--expdir', help='Save experiment at expdir')
-    parser.add_argument('-a', '--auto_resume', action='store_true', help='Auto-resume if the expdir contains checkpoints')
+    parser.add_argument(
+        "-n", "--expname", help="Save experiment at result/downstream/expname"
+    )
+    parser.add_argument("-p", "--expdir", help="Save experiment at expdir")
+    parser.add_argument(
+        "-a",
+        "--auto_resume",
+        action="store_true",
+        help="Auto-resume if the expdir contains checkpoints",
+    )
 
     # options
-    parser.add_argument('--seed', default=1337, type=int)
-    parser.add_argument('--device', default='cuda', help='model.to(device)')
-    parser.add_argument('--cache_dir', help='The cache directory for pretrained model downloading')
-    parser.add_argument('--verbose', action='store_true', help='Print model infomation')
-    parser.add_argument('--disable_cudnn', action='store_true', help='Disable CUDNN')
+    parser.add_argument("--seed", default=1337, type=int)
+    parser.add_argument("--device", default="cuda", help="model.to(device)")
+    parser.add_argument(
+        "--cache_dir", help="The cache directory for pretrained model downloading"
+    )
+    parser.add_argument("--verbose", action="store_true", help="Print model infomation")
+    parser.add_argument("--disable_cudnn", action="store_true", help="Disable CUDNN")
 
     args = parser.parse_args()
     backup_files = []
 
     if args.expdir is None:
-        args.expdir = f'result/downstream/{args.expname}'
+        args.expdir = f"result/downstream/{args.expname}"
 
     if args.auto_resume:
         if os.path.isdir(args.expdir):
-            ckpt_pths = glob.glob(f'{args.expdir}/states-*.ckpt')
+            ckpt_pths = glob.glob(f"{args.expdir}/states-*.ckpt")
             if len(ckpt_pths) > 0:
                 args.past_exp = args.expdir
 
     if args.past_exp:
         # determine checkpoint path
         if os.path.isdir(args.past_exp):
-            ckpt_pths = glob.glob(f'{args.past_exp}/states-*.ckpt')
+            ckpt_pths = glob.glob(f"{args.past_exp}/states-*.ckpt")
             assert len(ckpt_pths) > 0
-            ckpt_pths = sorted(ckpt_pths, key=lambda pth: int(pth.split('-')[-1].split('.')[0]))
+            ckpt_pths = sorted(
+                ckpt_pths, key=lambda pth: int(pth.split("-")[-1].split(".")[0])
+            )
             ckpt_pth = ckpt_pths[-1]
         else:
             ckpt_pth = args.past_exp
 
-        print(f'[Runner] - Resume from {ckpt_pth}')
+        print(f"[Runner] - Resume from {ckpt_pth}")
 
         # load checkpoint
-        ckpt = torch.load(ckpt_pth, map_location='cpu')
+        ckpt = torch.load(ckpt_pth, map_location="cpu")
 
         def update_args(old, new, preserve_list=None):
             out_dict = vars(old)
@@ -136,22 +279,28 @@ def get_downstream_args():
 
         # overwrite args
         cannot_overwrite_args = [
-            'mode', 'evaluate_split', 'override',
-            'backend', 'local_rank', 'past_exp',
-            'device', 'use_cache', 'cache_ram_ratio'
+            "mode",
+            "evaluate_split",
+            "override",
+            "backend",
+            "local_rank",
+            "past_exp",
+            "device",
+            "use_cache",
+            "cache_ram_ratio",
         ]
-        args = update_args(args, ckpt['Args'], preserve_list=cannot_overwrite_args)
+        args = update_args(args, ckpt["Args"], preserve_list=cannot_overwrite_args)
         os.makedirs(args.expdir, exist_ok=True)
         args.init_ckpt = ckpt_pth
-        config = ckpt['Config']
+        config = ckpt["Config"]
 
     else:
-        print('[Runner] - Start a new experiment')
+        print("[Runner] - Start a new experiment")
         os.makedirs(args.expdir, exist_ok=True)
 
         if args.config is None:
-            args.config = f'./downstream/{args.downstream}/config.yaml'
-        with open(args.config, 'r') as file:
+            args.config = f"./downstream/{args.downstream}/config.yaml"
+        with open(args.config, "r") as file:
             config = yaml.load(file, Loader=yaml.FullLoader)
 
     if args.override is not None and args.override.lower() != "none":
@@ -164,8 +313,8 @@ def get_downstream_args():
 def main():
     logging.basicConfig(level=logging.INFO)
 
-    torch.multiprocessing.set_sharing_strategy('file_system')
-    torchaudio.set_audio_backend('sox_io')
+    torch.multiprocessing.set_sharing_strategy("file_system")
+    torchaudio.set_audio_backend("sox_io")
     hack_isinstance()
 
     # get config and arguments
@@ -178,26 +327,30 @@ def main():
         torch.cuda.set_device(args.local_rank)
         torch.distributed.init_process_group(args.backend)
 
-    if args.mode == 'train' and args.past_exp:
-        ckpt = torch.load(args.init_ckpt, map_location='cpu')
+    if args.mode == "train" and args.past_exp:
+        ckpt = torch.load(args.init_ckpt, map_location="cpu")
 
         now_use_ddp = is_initialized()
-        original_use_ddp = ckpt['Args'].local_rank is not None
-        assert now_use_ddp == original_use_ddp, f'{now_use_ddp} != {original_use_ddp}'
+        original_use_ddp = ckpt["Args"].local_rank is not None
+        assert now_use_ddp == original_use_ddp, f"{now_use_ddp} != {original_use_ddp}"
 
         if now_use_ddp:
             now_world = get_world_size()
-            original_world = ckpt['WorldSize']
-            assert now_world == original_world, f'{now_world} != {original_world}'
+            original_world = ckpt["WorldSize"]
+            assert now_world == original_world, f"{now_world} != {original_world}"
 
     assert args.hub != "huggingface"
 
     # Save command
     if is_leader_process():
-        with open(os.path.join(args.expdir, f'args_{get_time_tag()}.yaml'), 'w') as file:
+        with open(
+            os.path.join(args.expdir, f"args_{get_time_tag()}.yaml"), "w"
+        ) as file:
             yaml.dump(vars(args), file)
 
-        with open(os.path.join(args.expdir, f'config_{get_time_tag()}.yaml'), 'w') as file:
+        with open(
+            os.path.join(args.expdir, f"config_{get_time_tag()}.yaml"), "w"
+        ) as file:
             yaml.dump(config, file)
 
         for file in backup_files:
@@ -207,7 +360,8 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if torch.cuda.is_available(): torch.cuda.manual_seed_all(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     if args.disable_cudnn:
         torch.backends.cudnn.enabled = False
     else:
@@ -216,20 +370,27 @@ def main():
         torch.backends.cudnn.benchmark = False
 
     if args.upstream is not None:
-        assert args.upstream1 is None and args.upstream2 is None, \
-            "Cannot specify both upstream and upstream1/upstream2"
-        assert args.upstream1_layer_selection is None and args.upstream2_layer_selection is None, \
-            "Cannot specify both upstream1_layer_selection and upstream2_layer_selection"
-        assert args.fusioner is None, "Cannot specify fusioner when only one upstream is used"
-        runner = RunnerCache(args, config)
+        assert (
+            args.upstream1 is None and args.upstream2 is None
+        ), "Cannot specify both upstream and upstream1/upstream2"
+        assert (
+            args.upstream1_layer_selection is None
+            and args.upstream2_layer_selection is None
+        ), "Cannot specify both upstream1_layer_selection and upstream2_layer_selection"
+        assert (
+            args.fusioner is None
+        ), "Cannot specify fusioner when only one upstream is used"
+        runner = Runner(args, config)
     else:
         assert args.upstream1 is not None, "Must specify at least one upstream"
-        assert args.fusioner is not None, "Must specify fusioner when two upstreams are used"
+        assert (
+            args.fusioner is not None
+        ), "Must specify fusioner when two upstreams are used"
         assert not args.use_cache, "Cannot use cache when two upstreams are used"
         runner = RunnerFusion(args, config)
 
-    eval(f'runner.{args.mode}')()
+    eval(f"runner.{args.mode}")()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

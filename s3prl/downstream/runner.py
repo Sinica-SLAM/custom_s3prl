@@ -6,13 +6,11 @@ import random
 import shutil
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 
 import numpy as np
 import torch
 import torchaudio
-from huggingface_hub import HfApi, HfFolder, Repository
 from tensorboardX import SummaryWriter
 from torch.distributed import get_rank, get_world_size, is_initialized
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -22,7 +20,7 @@ from tqdm import tqdm
 from s3prl import hub
 from s3prl.optimizers import get_optimizer
 from s3prl.schedulers import get_scheduler
-from s3prl.upstream.featurizer import *
+from s3prl.upstream.featurizer import *  # noqa
 from s3prl.utility.helper import defaultdict, get_model_state, is_leader_process, show
 
 SAMPLE_RATE = 16000
@@ -125,7 +123,7 @@ class Runner:
         return ModelEntry(model, name, trainable, interfaces)
 
     def _get_upstream(self):
-        if "from_hf_hub" in self.args and self.args.from_hf_hub == True:
+        if "from_hf_hub" in self.args and self.args.from_hf_hub:
             from huggingface_hub import snapshot_download
 
             print(
@@ -144,7 +142,7 @@ class Runner:
                 (Path(filepath) / "requirements.txt").open().readlines()
             ):
                 print(f"{idx}. {line.strip()}")
-            print(f"You can install them by:")
+            print("You can install them by:")
             print()
             print(f"pip install -r {dependencies}")
             print()
@@ -172,9 +170,9 @@ class Runner:
             torch.distributed.barrier()
 
         if self.args.upstream_trainable:
-            print(f"[Runner] - Upstream is trainable")
+            print("[Runner] - Upstream is trainable")
         else:
-            print(f"[Runner] - Upstream is not trainable")
+            print("[Runner] - Upstream is not trainable")
 
         return self._init_model(
             model=model,
@@ -188,10 +186,10 @@ class Runner:
             self.args.upstream_feature_selection == "hidden_states"
             and self.args.upstream_layer_selection is not None
         ):
-            print(f"[Runner] - Featurizer is not trainable")
+            print("[Runner] - Featurizer is not trainable")
             trainable = False
         else:
-            print(f"[Runner] - Featurizer is trainable")
+            print("[Runner] - Featurizer is trainable")
             trainable = True
 
         Featurizer = eval(self.args.featurizer)
@@ -445,7 +443,7 @@ class Runner:
                     save_paths = [
                         os.path.join(self.args.expdir, name) for name in save_names
                     ]
-                    tqdm.write(f"[Runner] - Save the checkpoint to:")
+                    tqdm.write("[Runner] - Save the checkpoint to:")
                     for i, path in enumerate(save_paths):
                         tqdm.write(f"{i + 1}. {path}")
                         torch.save(all_states, path)
@@ -454,9 +452,6 @@ class Runner:
             epoch += 1
 
         pbar.close()
-
-        if self.args.push_to_hf_hub:
-            self.push_to_huggingface_hub()
         if is_leader_process():
             logger.close()
 
@@ -535,7 +530,7 @@ class Runner:
             logger.close()
             shutil.rmtree(tempdir)
 
-        return [] if type(save_names) is not list else save_names
+        return [] if not isinstance(save_names, list) else save_names
 
     def inference(self):
         filepath = Path(self.args.evaluate_split)
@@ -556,86 +551,3 @@ class Runner:
             features = self.upstream.model(wavs)
             features = self.featurizer.model(wavs, features)
             self.downstream.model.inference(features, [filename])
-
-    def push_to_huggingface_hub(self):
-        """Creates a downstream repository on the Hub and pushes training artifacts to it."""
-        if self.args.hf_hub_org.lower() != "none":
-            organization = self.args.hf_hub_org
-        else:
-            organization = os.environ.get("HF_USERNAME")
-        huggingface_token = HfFolder.get_token()
-        print(f"[Runner] - Organisation to push fine-tuned model to: {organization}")
-
-        # Extract upstream repository metadata
-        if self.args.hub == "huggingface":
-            model_info = HfApi().model_info(self.args.upstream, token=huggingface_token)
-            downstream_model_id = model_info.sha
-            # Exclude "/" characters from downstream repo ID
-            upstream_model_id = model_info.modelId.replace("/", "__")
-        else:
-            upstream_model_id = self.args.upstream.replace("/", "__")
-            downstream_model_id = str(uuid.uuid4())[:8]
-        repo_name = f"{upstream_model_id}__{downstream_model_id}"
-        # Create downstream repo on the Hub
-        repo_url = HfApi().create_repo(
-            token=huggingface_token,
-            name=repo_name,
-            organization=organization,
-            exist_ok=True,
-            private=False,
-        )
-        print(f"[Runner] - Created Hub repo: {repo_url}")
-
-        # Download repo
-        HF_HUB_DIR = "hf_hub"
-        REPO_ROOT_DIR = os.path.join(self.args.expdir, HF_HUB_DIR, repo_name)
-        REPO_TASK_DIR = os.path.join(
-            REPO_ROOT_DIR, self.args.downstream, self.args.expname
-        )
-        print(f"[Runner] - Cloning Hub repo to {REPO_ROOT_DIR}")
-        model_repo = Repository(
-            local_dir=REPO_ROOT_DIR,
-            clone_from=repo_url,
-            use_auth_token=huggingface_token,
-        )
-        # Pull latest changes if they exist
-        model_repo.git_pull()
-
-        # Copy checkpoints, tensorboard logs, and args / configs
-        # Note that this copies all files from the experiment directory,
-        # including those from multiple runs
-        shutil.copytree(
-            self.args.expdir,
-            REPO_TASK_DIR,
-            dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns(HF_HUB_DIR),
-        )
-
-        # By default we use model.ckpt in the PreTrainedModel interface, so
-        # rename the best checkpoint to match this convention
-        checkpoints = list(Path(REPO_TASK_DIR).glob("*best*.ckpt"))
-        if len(checkpoints) == 0:
-            print(
-                "[Runner] - Did not find a best checkpoint! Using the final checkpoint instead ..."
-            )
-            CKPT_PATH = os.path.join(
-                REPO_TASK_DIR, f"states-{self.config['runner']['total_steps']}.ckpt"
-            )
-        elif len(checkpoints) > 1:
-            print(
-                f"[Runner] - More than one best checkpoint found! Using {checkpoints[0]} as default ..."
-            )
-            CKPT_PATH = checkpoints[0]
-        else:
-            print(f"[Runner] - Found best checkpoint {checkpoints[0]}!")
-            CKPT_PATH = checkpoints[0]
-        shutil.move(CKPT_PATH, os.path.join(REPO_TASK_DIR, "model.ckpt"))
-        model_repo.lfs_track("*.ckpt")
-
-        # Write model card
-        self._create_model_card(REPO_ROOT_DIR)
-
-        # Push everything to the Hub
-        print("[Runner] - Pushing model files to the Hub ...")
-        model_repo.push_to_hub()
-        print("[Runner] - Training run complete!")

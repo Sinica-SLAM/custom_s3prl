@@ -27,11 +27,13 @@ featurizer_conf:
     finalT: 1.0
     linear_num: 1
     exp_period: 1
-  GumbelSoftmax: *AnnealSoftmax
   GumbelSoftmax2: *AnnealSoftmax
   AnnealFusion: *AnnealSoftmax
-  GumbelFusion: *AnnealSoftmax
-  GumbelFusion2: *AnnealSoftmax
+  GumbelFusion2: *FixedSoftmax
+  ConvFeaturizer:
+    width: 3
+    stride: 1
+    padding: 1
 
 fusioner_conf:
   lambda_sum:
@@ -77,6 +79,7 @@ specaug:
 
 downstream_expert:
   datarc:
+    # train: ['train-clean-100', 'train-clean-360', 'train-other-500']
     train: ['train-clean-100']
     dev-clean: ['dev-clean']
     dev-other: ['dev-other']
@@ -85,7 +88,7 @@ downstream_expert:
     num_workers: 4
     batch_size: 16
     eval_batch_size: 1
-    libri_root: './data/librispeech'
+    libri_root: './data/LibriSpeech'
     bucket_file: './data/len_for_bucket'
     dict_path: "./downstream/asr/char.dict"
 

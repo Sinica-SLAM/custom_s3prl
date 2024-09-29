@@ -386,7 +386,6 @@ def main():
         assert (
             args.fusioner is not None
         ), "Must specify fusioner when two upstreams are used"
-        assert not args.use_cache, "Cannot use cache when two upstreams are used"
         runner = RunnerFusion(args, config)
 
     eval(f"runner.{args.mode}")()

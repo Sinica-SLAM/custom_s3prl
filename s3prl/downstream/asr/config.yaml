@@ -29,7 +29,7 @@ featurizer_conf:
     exp_period: 1
   GumbelSoftmax2: *AnnealSoftmax
   AnnealFusion: *AnnealSoftmax
-  GumbelFusion2: *FixedSoftmax
+  GumbelFusion2: *AnnealSoftmax
   ConvFeaturizer:
     width: 3
     stride: 1
@@ -88,7 +88,7 @@ downstream_expert:
     num_workers: 4
     batch_size: 16
     eval_batch_size: 1
-    libri_root: './data/LibriSpeech'
+    libri_root: './data/librispeech'
     bucket_file: './data/len_for_bucket'
     dict_path: "./downstream/asr/char.dict"
 

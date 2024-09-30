@@ -1,7 +1,6 @@
 import sys
 from typing import Callable, Dict, List, Tuple, Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -50,7 +49,7 @@ class UpstreamBase(nn.Module, metaclass=initHook):
         super().__init__()
         self.hooks: List[Hook] = [Hook(*hook) for hook in hooks] if hooks else []
         self.hook_postprocess = hook_postprocess
-        self._hook_hiddens: List[Tuple(str, Tensor)] = []
+        self._hook_hiddens: List[Tuple[str, Tensor]] = []
 
     def remove_all_hooks(self):
         for hook in self.hooks:
@@ -257,7 +256,7 @@ class Featurizer(nn.Module):
         assert (
             length_diff < TOLERABLE_SEQLEN_DIFF
         ), f"{length_diff} >= {TOLERABLE_SEQLEN_DIFF}"
-        feature = [f[:l] for f, l in zip(paired_feature, feature_len)]
+        feature = [f[:length] for f, length in zip(paired_feature, feature_len)]
         return feature
 
     def forward(

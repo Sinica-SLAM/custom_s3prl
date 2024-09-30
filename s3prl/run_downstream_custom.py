@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torchaudio
 import yaml
-from huggingface_hub import HfApi, HfFolder
 from torch.distributed import get_world_size, is_initialized
 
 from s3prl import hub
@@ -286,8 +285,6 @@ def get_downstream_args():
             "local_rank",
             "past_exp",
             "device",
-            "use_cache",
-            "cache_ram_ratio",
         ]
         args = update_args(args, ckpt["Args"], preserve_list=cannot_overwrite_args)
         os.makedirs(args.expdir, exist_ok=True)

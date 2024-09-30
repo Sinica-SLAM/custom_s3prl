@@ -57,7 +57,7 @@ class Featurizer(nn.Module):
         if isinstance(feature, (list, tuple)):
             self.layer_num = len(feature)
             show(
-                f"[{self.name}] - Take a list of {self.layer_num} features and weighted sum them.",
+                f"[{self.__class__.__name__}] - Take a list of {self.layer_num} features and weighted sum them.",
                 file=sys.stderr,
             )
             self.weights = nn.Parameter(torch.zeros(self.layer_num))
@@ -69,7 +69,7 @@ class Featurizer(nn.Module):
         if hasattr(upstream, "get_downsample_rates"):
             self.downsample_rate = upstream.get_downsample_rates(feature_selection)
             show(
-                f"[{self.name}] - The selected feature {feature_selection}'s downsample rate is {self.downsample_rate}",
+                f"[{self.__class__.__name__}] - The selected feature {feature_selection}'s downsample rate is {self.downsample_rate}",
                 file=sys.stderr,
             )
         else:
@@ -77,7 +77,7 @@ class Featurizer(nn.Module):
                 max(len(wav) for wav in paired_wavs) / feature.size(1)
             )
             show(
-                f"[{self.name}] - Warning: The provided upstream does not give statis downsample rate"
+                f"[{self.__class__.__name__}] - Warning: The provided upstream does not give statis downsample rate"
                 ' by the "get_downsample_rates" interface (see upstream/example/expert.py).'
                 " The downsample rate is calculated dynamically basing on the shape of the"
                 f" input waveforms v.s. the output features: {self.downsample_rate}",

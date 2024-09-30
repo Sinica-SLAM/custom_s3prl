@@ -397,6 +397,10 @@ class Runner:
                         batch_ids=batch_ids,
                         total_batch_num=len(dataloader),
                     )
+                    if hasattr(self.featurizer.model, "temp"):
+                        logger.add_scalar(
+                            "temp", self.featurizer.model.temp, global_step=global_step
+                        )
                     batch_ids = []
                     records = defaultdict(list)
                     if hasattr(self.featurizer.model, "show"):

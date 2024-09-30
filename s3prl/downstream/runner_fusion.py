@@ -468,6 +468,24 @@ class RunnerFusion:
                         batch_ids=batch_ids,
                         total_batch_num=len(dataloader),
                     )
+                    if hasattr(self.ifeaturizer1.model, "temp"):
+                        logger.add_scalar(
+                            "temp1",
+                            self.ifeaturizer1.model.temp,
+                            global_step=global_step,
+                        )
+                    if hasattr(self.ifeaturizer2.model, "temp"):
+                        logger.add_scalar(
+                            "temp2",
+                            self.ifeaturizer2.model.temp,
+                            global_step=global_step,
+                        )
+                    if hasattr(self.fusioner.model, "temp"):
+                        logger.add_scalar(
+                            "temp",
+                            self.fusioner.model.temp,
+                            global_step=global_step,
+                        )
                     batch_ids = []
                     records = defaultdict(list)
                     if hasattr(self.ifeaturizer1.model, "show"):

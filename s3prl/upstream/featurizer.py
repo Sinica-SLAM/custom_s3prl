@@ -224,6 +224,7 @@ class AnnealSoftmax(Featurizer):
 
         self.init_temp(**kwargs)
         self.init_weights()
+        self.show()
 
     def init_temp(
         self, initT=1.0, turnT=0.1, finalT=0.0001, linear_num=30000, exp_period=30000

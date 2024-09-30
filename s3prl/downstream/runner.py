@@ -374,6 +374,8 @@ class Runner:
                     print(f"[Runner] - grad norm is NaN at step {global_step}")
                 else:
                     optimizer.step()
+                    if hasattr(self.featurizer.model, "step"):
+                        self.featurizer.model.step()
                 optimizer.zero_grad()
 
                 # adjust learning rate
@@ -397,6 +399,8 @@ class Runner:
                     )
                     batch_ids = []
                     records = defaultdict(list)
+                    if hasattr(self.featurizer.model, "show"):
+                        self.featurizer.model.show()
 
                 # evaluation and save checkpoint
                 save_names = []

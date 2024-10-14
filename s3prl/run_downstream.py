@@ -11,7 +11,7 @@ from argparse import Namespace
 from torch.distributed import is_initialized, get_world_size
 
 from s3prl import hub
-from s3prl.downstream.runner import Runner
+from s3prl.downstream.runner_orig import Runner
 from s3prl.utility.helper import backup, get_time_tag, hack_isinstance, is_leader_process, override
 
 from huggingface_hub import HfApi, HfFolder
@@ -71,7 +71,7 @@ def get_downstream_args():
 
     # experiment directory, choose one to specify
     # expname uses the default root directory: result/downstream
-    parser.add_argument('-n', '--expname', help='Save experiment at result/downstream/expname')
+    parser.add_argument('-n', '--expname', help='Save experiment at result/downstream_orig/expname')
     parser.add_argument('-p', '--expdir', help='Save experiment at expdir')
     parser.add_argument('-a', '--auto_resume', action='store_true', help='Auto-resume if the expdir contains checkpoints')
     parser.add_argument('--push_to_hf_hub', default=False, help='Push all files in experiment directory to the Hugging Face Hub. To use this feature you must set HF_USERNAME and HF_PASSWORD as environment variables in your shell')
@@ -88,7 +88,7 @@ def get_downstream_args():
     backup_files = []
 
     if args.expdir is None:
-        args.expdir = f'result/downstream/{args.expname}'
+        args.expdir = f'result/downstream_orig/{args.expname}'
 
     if args.auto_resume:
         if os.path.isdir(args.expdir):
